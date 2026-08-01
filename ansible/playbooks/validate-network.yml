@@ -1,0 +1,36 @@
+# Validation réseau inter-nœuds : présence des interfaces attendues (par
+# rôle réseau Terraform), MTU effectif et connectivité full-mesh sur les
+# réseaux management et tunnel.
+---
+- name: Validation réseau des nœuds éphémères
+  hosts: all
+  gather_facts: true
+  tasks:
+    - name: Vérifier la présence de chaque interface attendue
+      ansible.builtin.assert:
+        that:
+          - item.value in ansible_facts['interfaces']
+        fail_msg: >-
+          Interface {{ item.value }} ({{ item.key }}) absente sur
+          {{ inventory_hostname }} : correspondance MAC/cloud-init défaillante.
+      loop: "{{ eph_expected_interfaces | default({}) | dict2items }}"
+      vars:
+        eph_expected_interfaces:
+          management: "{{ network_interface }}"
+
+    - name: Ping full-mesh management (paquets non fragmentés proches du MTU)
+      ansible.builtin.command: >-
+        ping -c 2 -W 3 -M do -s 1400 {{ hostvars[item]['ansible_host'] }}
+      loop: "{{ groups['all'] | difference([inventory_hostname]) }}"
+      changed_when: false
+
+    - name: Ping full-mesh tunnel entre nœuds du groupe compute/network
+      ansible.builtin.command: >-
+        ping -c 2 -W 3 {{ hostvars[item]['eph_interface_ips']['tunnel'] }}
+      loop: "{{ (groups['compute'] + groups['network']) | unique | difference([inventory_hostname]) }}"
+      when:
+        - eph_interface_ips is defined
+        - "'tunnel' in (eph_interface_ips | default({}))"
+        - hostvars[item]['eph_interface_ips'] is defined
+        - "'tunnel' in hostvars[item]['eph_interface_ips']"
+      changed_when: false

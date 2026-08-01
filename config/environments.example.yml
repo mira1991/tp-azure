@@ -1,0 +1,52 @@
+# Exemple de description d'un environnement éphémère.
+#
+# Ce fichier N'EST PAS lu par la pipeline : c'est la documentation exécutable
+# des variables à fournir (GitLab > Run pipeline, ou groupe/projet CI/CD
+# variables). Il est validé par config/schema/environment.schema.json dans les
+# tests unitaires pour garantir que l'exemple reste conforme.
+---
+environment:
+  # ENVIRONMENT_ID : défaut CI_PIPELINE_IID — surchargez uniquement pour
+  # ré-attacher une pipeline à un environnement existant (relance, teardown).
+  environment_id: 142
+  purpose_short: "upg"          # eph-osk-upg-142-...
+  owner: "jdoe"
+  purpose: "upgrade validation 2024.1 -> 2024.2"
+  ttl_hours: 48
+
+deployment:
+  profile: "ha"                 # minimal | ha
+  placement_strategy: "spread"  # spread | pack | manual
+  terraform_phase: "full"       # full | allocate (mode compatibilité 2 phases)
+
+netbox:
+  url: "https://netbox.example.internal"   # variable NETBOX_URL (token à part)
+  site: "dc1"
+  tenant: "lab"
+  cluster: "pve-lab"
+  vlan_group: "lab-vlans"
+  vrf: ""                        # vide = table globale
+  vm_role: "ephemeral-openstack"
+  platform: "ubuntu-22.04"
+  ephemeral_ip_status: "reserved"
+  network_role_vlans:
+    management: "lab-osk-mgmt"
+    internal_api: "lab-osk-api"
+    tunnel: "lab-osk-tun"
+    provider: "lab-osk-prov"
+    storage: "lab-osk-sto"
+    octavia_management: "lab-osk-oct"
+
+proxmox:
+  api_url: "https://pve.example.internal:8006/api2/json"  # PROXMOX_API_URL
+  target_nodes: ["pve-01", "pve-02", "pve-03"]
+  pool: "eph-openstack"
+  template_vmid: 9000
+  template_node: "pve-01"
+  storage: "local-lvm"
+  snippets_storage: "local"
+
+kolla:
+  registry: "registry.example.internal:5000"
+  registry_namespace: "openstack.kolla"
+  passwords_mode: "generate"     # generate | vault

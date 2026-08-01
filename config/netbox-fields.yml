@@ -1,0 +1,37 @@
+# Mapping centralisé des custom fields et tags NetBox.
+#
+# Ne jamais supposer ailleurs dans le code que les custom fields portent ces
+# noms : tout passe par ce fichier (exigence : découplage nom logique / nom
+# réel dans votre instance NetBox). Mettre "null" pour désactiver un champ
+# non provisionné dans votre NetBox.
+---
+# Custom fields ÉCRITS par Terraform sur les objets éphémères créés
+# (VM NetBox). Clé = nom logique utilisé par le code ; valeur = nom réel du
+# custom field dans NetBox (null = ne pas écrire).
+custom_fields:
+  environment_id: "environment_id"
+  environment_name: "environment_name"
+  pipeline_id: "pipeline_id"
+  pipeline_url: "pipeline_url"
+  project_path: "project_path"
+  owner: "owner"
+  purpose: "purpose"
+  expires_at: "expires_at"
+  managed_by: "managed_by"
+
+# Custom fields LUS (jamais écrits) sur les préfixes NetBox permanents pour
+# surcharger les paramètres de config/network-roles.yml (null = désactivé).
+prefix_overrides:
+  proxmox_bridge: "proxmox_bridge"
+  gateway: "gateway"
+  mtu: "mtu"
+  dns_servers: "dns_servers"
+  search_domain: "search_domain"
+
+# Tags permanents appliqués aux objets éphémères. Ils doivent EXISTER dans
+# NetBox avant la première exécution (voir docs/NETBOX.md) : Terraform les
+# lit en data source et échoue s'ils sont absents.
+permanent_tags:
+  - "eph"
+  - "openstack"
+  - "managed-by-terraform"

@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gitlab.example/eph-openstack/schemas/networks.schema.json",
+  "title": "Rôles réseau",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["defaults", "global", "roles"],
+  "$defs": {
+    "roleSettings": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "allocate_ip": {"type": "boolean"},
+        "use_gateway": {"type": "boolean"},
+        "gateway_host_offset": {"type": "integer", "minimum": 1},
+        "gateway_override": {"type": "string"},
+        "mtu": {"type": "integer", "minimum": 1280, "maximum": 9216},
+        "vlan_tag_on_bridge": {"type": "boolean"},
+        "proxmox_bridge": {"type": "string", "minLength": 1},
+        "dns_servers": {"type": "array", "items": {"type": "string"}},
+        "static_routes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["to", "via"],
+            "properties": {
+              "to": {"type": "string"},
+              "via": {"type": "string"}
+            }
+          }
+        }
+      }
+    }
+  },
+  "properties": {
+    "defaults": {"$ref": "#/$defs/roleSettings"},
+    "global": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "dns_servers": {"type": "array", "items": {"type": "string"}},
+        "search_domain": {"type": "string"},
+        "ntp_servers": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "roles": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {"pattern": "^[a-z][a-z0-9_]*$"},
+      "additionalProperties": {"$ref": "#/$defs/roleSettings"}
+    }
+  }
+}

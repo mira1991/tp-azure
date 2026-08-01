@@ -1,0 +1,109 @@
+# Stage validate — s'exécute sur toutes les pipelines (MR comprises).
+# Aucun accès aux plateformes : lint, schémas, tests unitaires, scan de secrets.
+
+.validate_base:
+  extends: .rules_validate
+  stage: validate
+  interruptible: true
+  needs: []
+
+yamllint:
+  extends: .validate_base
+  script:
+    - yamllint --strict -c .yamllint.yml .
+
+validate_schemas:
+  extends: .validate_base
+  script:
+    - python3 scripts/validate-inputs.py
+
+terraform_fmt:
+  extends: .validate_base
+  script:
+    - terraform fmt -check -diff -recursive terraform/
+
+terraform_validate_substrate:
+  extends: .validate_base
+  script:
+    - cd terraform/substrate
+    - terraform init -backend=false
+    - terraform validate
+
+terraform_validate_openstack_config:
+  extends: .validate_base
+  script:
+    - cd terraform/openstack-config
+    - terraform init -backend=false
+    - terraform validate
+
+terraform_unit_tests:
+  extends: .validate_base
+  script:
+    - cd terraform/substrate
+    - terraform init -backend=false
+    - terraform test
+
+tflint:
+  extends: .validate_base
+  script:
+    - tflint --init --config "${CI_PROJECT_DIR}/.tflint.hcl"
+    - tflint --chdir terraform/substrate --config "${CI_PROJECT_DIR}/.tflint.hcl"
+    - tflint --chdir terraform/openstack-config --config "${CI_PROJECT_DIR}/.tflint.hcl"
+
+checkov:
+  extends: .validate_base
+  script:
+    - checkov --config-file .checkov.yaml --directory terraform
+
+ansible_lint:
+  extends: .validate_base
+  script:
+    - ansible-lint ansible/
+
+python_lint:
+  extends: .validate_base
+  script:
+    - ruff check scripts/ tests/
+    - ruff format --check scripts/ tests/
+
+python_types:
+  extends: .validate_base
+  script:
+    - mypy scripts/
+
+python_unit_tests:
+  extends: .validate_base
+  script:
+    - pytest tests/unit -v --junitxml=reports/unit.xml
+  artifacts:
+    when: always
+    reports:
+      junit: reports/unit.xml
+    expire_in: 30 days
+
+jinja_validate:
+  extends: .validate_base
+  script:
+    - |
+      python3 - <<'PYEOF'
+      import pathlib
+      import sys
+
+      import jinja2
+
+      env = jinja2.Environment(undefined=jinja2.StrictUndefined)
+      errors = 0
+      for template in pathlib.Path("kolla").rglob("*.j2"):
+          try:
+              env.parse(template.read_text(encoding="utf-8"))
+              print(f"OK: {template}")
+          except jinja2.TemplateSyntaxError as exc:
+              print(f"ERREUR: {template}: {exc}", file=sys.stderr)
+              errors += 1
+      sys.exit(1 if errors else 0)
+      PYEOF
+
+secret_scan:
+  extends: .validate_base
+  script:
+    - gitleaks detect --source . --no-banner --redact --verbose

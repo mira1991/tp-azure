@@ -1,0 +1,34 @@
+# host_vars pour ${name} (rôle: ${role}) — généré par Terraform (substrate).
+---
+ansible_host: ${management_ip}
+ansible_user: ${ssh_user}
+%{ if bastion != "" ~}
+ansible_ssh_common_args: "-o ProxyJump=${ssh_user}@${bastion} -o StrictHostKeyChecking=accept-new"
+%{ endif ~}
+
+eph_node_role: ${role}
+
+# Interfaces Kolla propres à ce nœud (les noms ethN peuvent différer selon le
+# rôle : la correspondance vient de la topologie Terraform, pas de l'ordre
+# d'énumération Linux).
+network_interface: ${interfaces["management"]}
+%{ if contains(keys(interfaces), "internal_api") ~}
+api_interface: ${interfaces["internal_api"]}
+%{ endif ~}
+%{ if contains(keys(interfaces), "tunnel") ~}
+tunnel_interface: ${interfaces["tunnel"]}
+%{ endif ~}
+%{ if contains(keys(interfaces), "provider") ~}
+neutron_external_interface: ${interfaces["provider"]}
+%{ endif ~}
+%{ if contains(keys(interfaces), "storage") ~}
+storage_interface: ${interfaces["storage"]}
+%{ endif ~}
+
+# IP par rôle réseau (consommées par les playbooks de validation).
+eph_interface_ips:
+%{ for role_name, ip in interface_ips ~}
+%{ if ip != "" ~}
+  ${role_name}: ${ip}
+%{ endif ~}
+%{ endfor ~}

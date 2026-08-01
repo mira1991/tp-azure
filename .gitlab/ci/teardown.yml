@@ -1,0 +1,213 @@
+# Stages de teardown — ordre STRICT (voir docs/TEARDOWN.md) :
+#   1. destroy_openstack_config (tant que les API OpenStack existent)
+#   2. kolla_destroy            (best effort)
+#   3. destroy_substrate        (VM Proxmox -> IP NetBox -> interfaces -> VM NetBox)
+#   4. verify_cleanup / close
+#
+# Les jobs de teardown ne dépendent que de resolve_environment : ils restent
+# exécutables même si Kolla, les prechecks, les tests ou le state
+# openstack-config ont échoué. L'ordre entre eux est porté par les stages.
+# Aucune suppression hors state : tout passe par terraform destroy.
+
+destroy_openstack_config:
+  extends: [.environment_lock]
+  stage: destroy_openstack_config
+  image: "${TOOLBOX_IMAGE}"
+  # Pas de `needs` : l'ordre par stages garantit qu'en mode AUTO_TEARDOWN ce
+  # job ne démarre qu'après les stages précédents ; en manuel il reste
+  # jouable même si des jobs amont ont échoué. `dependencies` ne sert qu'aux
+  # artefacts (+ dotenv de resolve_environment).
+  dependencies:
+    - resolve_environment
+    - substrate_apply
+    - kolla_generate_config
+  variables:
+    OS_CLOUD: "eph"
+    OS_CLIENT_CONFIG_FILE: "${CI_PROJECT_DIR}/.osc/clouds.yaml"
+  rules:
+    - !reference [.rules_teardown_auto, rules]
+  # Peut échouer si les API OpenStack sont déjà indisponibles : le teardown
+  # du substrate reste possible (procédure d'exception : docs/RECOVERY.md).
+  allow_failure: true
+  script:
+    - source scripts/terraform-env.sh openstack-config
+    - terraform -chdir="${TF_ROOT}" init
+    - |
+      mkdir -p .osc artifacts/teardown
+      trap 'shred -u .osc/clouds.yaml 2>/dev/null || true' EXIT
+      if [ -f substrate-outputs.json ] && [ -f .kolla/passwords.yml ]; then
+        python3 scripts/render-terraform-outputs.py clouds \
+          --outputs substrate-outputs.json \
+          --passwords .kolla/passwords.yml \
+          --out .osc/clouds.yaml
+      else
+        echo "Outputs/passwords indisponibles dans cette pipeline : tentative avec l'environnement OS_* fourni."
+      fi
+    - terraform -chdir="${TF_ROOT}" plan -destroy -out=tfdestroy.bin
+    - terraform -chdir="${TF_ROOT}" show -json tfdestroy.bin > artifacts/teardown/openstack-config-destroy-plan.json
+    - python3 scripts/check-destroy-plan.py
+      --plan-json artifacts/teardown/openstack-config-destroy-plan.json --state openstack-config
+    - terraform -chdir="${TF_ROOT}" apply tfdestroy.bin
+  artifacts:
+    when: always
+    access: developer
+    paths:
+      - artifacts/teardown/
+    expire_in: 30 days
+
+kolla_destroy:
+  extends: [.environment_lock]
+  stage: kolla_destroy
+  image: "${TOOLBOX_IMAGE}"
+  dependencies:
+    - resolve_environment
+    - substrate_apply
+    - generate_inventory
+    - kolla_generate_config
+  variables:
+    KOLLA_VENV: "source"
+    ANSIBLE_CONFIG: "${CI_PROJECT_DIR}/ansible/ansible.cfg"
+    ANSIBLE_HOST_KEY_CHECKING: "false"
+  rules:
+    - !reference [.rules_teardown_auto, rules]
+  # Best effort : les VM vont de toute façon être détruites par le substrate.
+  allow_failure: true
+  script:
+    - !reference [.ssh_agent, before_script]
+    - export KOLLA_CONFIG_DIR="${CI_PROJECT_DIR}/.kolla"
+    - |
+      if [ ! -f artifacts/inventory/multinode ] || [ ! -f "${KOLLA_CONFIG_DIR}/passwords.yml" ]; then
+        echo "Inventaire ou passwords indisponibles : kolla-ansible destroy ignoré (best effort)."
+        exit 0
+      fi
+    - kolla-ansible destroy -i artifacts/inventory/multinode
+      --configdir "${KOLLA_CONFIG_DIR}" --passwords "${KOLLA_CONFIG_DIR}/passwords.yml"
+      --yes-i-really-really-mean-it
+
+destroy_substrate:
+  extends: [.environment_lock]
+  stage: destroy_substrate
+  image: "${TOOLBOX_IMAGE}"
+  dependencies:
+    - resolve_environment
+  rules:
+    - if: '$REAPER == "true"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "push"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $DEPLOY_FROM_MERGE_REQUEST != "true"'
+      when: never
+    - if: '$AUTO_TEARDOWN == "true"'
+      when: always
+    - when: manual
+      allow_failure: false
+  script:
+    - !reference [.ssh_agent, before_script]
+    - source scripts/terraform-env.sh substrate
+    - terraform -chdir="${TF_ROOT}" init
+    - mkdir -p artifacts/teardown
+    - terraform -chdir="${TF_ROOT}" plan -destroy -out=tfdestroy.bin
+    - terraform -chdir="${TF_ROOT}" show -json tfdestroy.bin > artifacts/teardown/substrate-destroy-plan.json
+    # Garde-fou d'acceptation : le plan ne doit détruire QUE des objets
+    # éphémères (jamais VLAN/préfixe/site/tenant), et l'ordre VM Proxmox ->
+    # IP -> interfaces -> VM NetBox est garanti par le graphe de dépendances.
+    - python3 scripts/check-destroy-plan.py
+      --plan-json artifacts/teardown/substrate-destroy-plan.json --state substrate
+    - terraform -chdir="${TF_ROOT}" apply tfdestroy.bin
+    - terraform -chdir="${TF_ROOT}" state pull > artifacts/teardown/substrate-final-state.json || true
+    - echo "Substrate détruit — IP NetBox libérées après leurs VM Proxmox, interfaces et VM NetBox supprimées."
+  after_script:
+    - |
+      if [ "${CI_JOB_STATUS}" != "success" ]; then
+        echo "Échec du destroy substrate : state CONSERVÉ. Utiliser retry_substrate_destroy," >&2
+        echo "puis docs/RECOVERY.md si l'échec persiste. Ne rien supprimer hors Terraform." >&2
+      fi
+  artifacts:
+    when: always
+    access: developer
+    paths:
+      - artifacts/teardown/
+    expire_in: 30 days
+
+# Relance du destroy substrate après correction (state conservé).
+retry_substrate_destroy:
+  extends: [.environment_lock]
+  stage: destroy_substrate
+  image: "${TOOLBOX_IMAGE}"
+  dependencies:
+    - resolve_environment
+  rules:
+    - if: '$REAPER == "true"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "push"'
+      when: never
+    - when: manual
+  allow_failure: true
+  script:
+    - !reference [.ssh_agent, before_script]
+    - source scripts/terraform-env.sh substrate
+    - terraform -chdir="${TF_ROOT}" init
+    - mkdir -p artifacts/teardown
+    - terraform -chdir="${TF_ROOT}" plan -destroy -out=tfdestroy.bin
+    - terraform -chdir="${TF_ROOT}" show -json tfdestroy.bin > artifacts/teardown/substrate-destroy-retry-plan.json
+    - python3 scripts/check-destroy-plan.py
+      --plan-json artifacts/teardown/substrate-destroy-retry-plan.json --state substrate
+    - terraform -chdir="${TF_ROOT}" apply tfdestroy.bin
+  artifacts:
+    when: always
+    access: developer
+    paths:
+      - artifacts/teardown/
+    expire_in: 30 days
+
+# Vérification post-teardown : plus AUCUN objet NetBox/Proxmox ne doit porter
+# le tag de l'environnement (lecture seule, échec = alerte orphelins).
+verify_cleanup:
+  stage: verify_cleanup
+  image: "${TOOLBOX_IMAGE}"
+  dependencies:
+    - resolve_environment
+  rules:
+    - !reference [.rules_teardown_auto, rules]
+  script:
+    - mkdir -p artifacts/teardown
+    - python3 scripts/detect-orphans.py --mode environment
+      --environment-id "${ENVIRONMENT_ID}"
+      --out artifacts/teardown/orphans-report.json
+    - |
+      count="$(jq '.resources | length' artifacts/teardown/orphans-report.json)"
+      if [ "${count}" != "0" ]; then
+        echo "${count} ressource(s) portent encore le tag environment-${ENVIRONMENT_ID}." >&2
+        echo "Procédure de réconciliation : docs/RECOVERY.md (import puis destroy)." >&2
+        exit 2
+      fi
+      echo "Nettoyage vérifié : aucune ressource restante."
+  artifacts:
+    when: always
+    paths:
+      - artifacts/teardown/
+    expire_in: 30 days
+
+# Clôture de l'environnement GitLab (job on_stop de substrate_apply).
+close_environment:
+  stage: close
+  image: "${TOOLBOX_IMAGE}"
+  dependencies:
+    - resolve_environment
+  rules:
+    - if: '$REAPER == "true"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "push"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $DEPLOY_FROM_MERGE_REQUEST != "true"'
+      when: never
+    - if: '$AUTO_TEARDOWN == "true"'
+      when: always
+    - when: manual
+  allow_failure: true
+  environment:
+    name: "eph/openstack/${ENVIRONMENT_NAME}"
+    action: stop
+  script:
+    - echo "Environnement GitLab eph/openstack/${ENVIRONMENT_NAME} clôturé."
+    - echo "Le state Terraform détruit est conservé pour audit (docs/TEARDOWN.md)."

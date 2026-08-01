@@ -1,0 +1,60 @@
+# Stages openstack_config_plan / openstack_config_apply — post-configuration
+# OpenStack entièrement portée par le provider Terraform OpenStack, dans un
+# state séparé (détruit AVANT le substrate au teardown).
+
+.openstack_terraform:
+  extends: [.rules_deploy, .environment_lock]
+  image: "${TOOLBOX_IMAGE}"
+  variables:
+    OS_CLOUD: "eph"
+    OS_CLIENT_CONFIG_FILE: "${CI_PROJECT_DIR}/.osc/clouds.yaml"
+  before_script:
+    - source scripts/terraform-env.sh openstack-config
+    - mkdir -p "${TF_PLUGIN_CACHE_DIR}" .osc
+    # clouds.yaml temporaire (0600) reconstruit à chaque job depuis
+    # passwords.yml — jamais artefacté, détruit par trap.
+    - trap 'shred -u .osc/clouds.yaml 2>/dev/null || true' EXIT
+    - python3 scripts/render-terraform-outputs.py clouds
+      --outputs substrate-outputs.json
+      --passwords .kolla/passwords.yml
+      --out .osc/clouds.yaml
+    - terraform -chdir="${TF_ROOT}" init
+
+openstack_config_plan:
+  extends: .openstack_terraform
+  stage: openstack_config_plan
+  needs:
+    - resolve_environment
+    - substrate_apply
+    - kolla_generate_config
+    - kolla_deploy
+  script:
+    - terraform -chdir="${TF_ROOT}" plan -out=tfplan.bin
+    - terraform -chdir="${TF_ROOT}" show -json tfplan.bin > openstack-config-plan.json
+    - terraform -chdir="${TF_ROOT}" show tfplan.bin > openstack-config-plan.txt
+  artifacts:
+    access: developer
+    paths:
+      - terraform/openstack-config/tfplan.bin
+      - terraform/openstack-config/openstack-config-plan.json
+      - terraform/openstack-config/openstack-config-plan.txt
+    expire_in: 7 days
+
+openstack_config_apply:
+  extends: .openstack_terraform
+  stage: openstack_config_apply
+  needs:
+    - resolve_environment
+    - substrate_apply
+    - kolla_generate_config
+    - openstack_config_plan
+  rules:
+    - !reference [.rules_apply_gate, rules]
+  script:
+    - terraform -chdir="${TF_ROOT}" apply tfplan.bin
+    - terraform -chdir="${TF_ROOT}" output -json > openstack-config-outputs.json
+  artifacts:
+    access: developer
+    paths:
+      - openstack-config-outputs.json
+    expire_in: 30 days

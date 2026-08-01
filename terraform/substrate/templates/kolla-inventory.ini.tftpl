@@ -1,0 +1,41 @@
+# Groupes d'hôtes Kolla-Ansible — générés par Terraform (substrate).
+# Les ansible_host et interfaces par nœud sont dans host_vars/<nom>.yml.
+# Les groupes de services ([baremetal:children], etc.) sont ajoutés par
+# scripts/render-terraform-outputs.py depuis le multinode de la version
+# Kolla-Ansible installée (alignement garanti avec la release).
+
+[control]
+%{ for host in groups.control ~}
+${host}
+%{ endfor ~}
+
+[network]
+%{ for host in groups.network ~}
+${host}
+%{ endfor ~}
+
+[compute]
+%{ for host in groups.compute ~}
+${host}
+%{ endfor ~}
+
+[monitoring]
+%{ for host in groups.monitoring ~}
+${host}
+%{ endfor ~}
+
+[storage]
+%{ for host in groups.storage ~}
+${host}
+%{ endfor ~}
+
+# Nœud de déploiement (bastion) — hors groupes de services Kolla.
+[deployment]
+%{ for host in groups.deployment ~}
+${host}
+%{ endfor ~}
+
+[all:vars]
+ansible_user=${ssh_user}
+ansible_become=true
+ansible_ssh_common_args=-o StrictHostKeyChecking=accept-new

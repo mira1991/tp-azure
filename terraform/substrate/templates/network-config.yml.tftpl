@@ -1,0 +1,42 @@
+# cloud-init network-config (version 1) — généré par Terraform (substrate).
+# Chaque interface est identifiée par sa MAC déterministe : le nom Linux ethN
+# est donc imposé et aligné avec NetBox et l'inventaire Kolla, sans dépendre
+# de l'ordre d'énumération du noyau. Les adresses proviennent directement des
+# ressources netbox_available_ip_address (réservation dynamique).
+version: 1
+config:
+%{ for nic in nics ~}
+  - type: physical
+    name: ${nic.name}
+    mac_address: "${nic.mac}"
+    mtu: ${nic.mtu}
+    subnets:
+%{ if nic.address != null ~}
+      - type: static
+        address: "${nic.address}"
+%{ if nic.gateway != null ~}
+        gateway: "${nic.gateway}"
+%{ endif ~}
+%{ if length(nic.routes) > 0 ~}
+        routes:
+%{ for route in nic.routes ~}
+          - destination: "${route.to}"
+            gateway: "${route.via}"
+%{ endfor ~}
+%{ endif ~}
+%{ else ~}
+      # Interface L2 pure (neutron_external_interface) : pas d'adresse IP.
+      - type: manual
+%{ endif ~}
+%{ endfor ~}
+%{ if length(dns_servers) > 0 ~}
+  - type: nameserver
+    address:
+%{ for server in dns_servers ~}
+      - "${server}"
+%{ endfor ~}
+%{ if search_domain != "" ~}
+    search:
+      - "${search_domain}"
+%{ endif ~}
+%{ endif ~}

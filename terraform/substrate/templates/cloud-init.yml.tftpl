@@ -1,0 +1,61 @@
+#cloud-config
+# Généré par Terraform (substrate) — ne contient AUCUN secret durable :
+# uniquement la clé publique SSH et des paramètres système. L'installation
+# d'OpenStack est réalisée par Kolla-Ansible (jobs GitLab), pas par cloud-init.
+hostname: ${hostname}
+fqdn: ${fqdn}
+prefer_fqdn_over_hostname: false
+manage_etc_hosts: true
+timezone: UTC
+
+users:
+  - name: ${username}
+    groups: [adm, sudo]
+    shell: /bin/bash
+    sudo: "ALL=(ALL) NOPASSWD:ALL"
+    lock_passwd: true
+    ssh_authorized_keys:
+      - "${ssh_public_key}"
+
+ssh_pwauth: false
+disable_root: true
+
+%{ if apt_proxy_url != "" ~}
+apt:
+  http_proxy: "${apt_proxy_url}"
+  https_proxy: "${apt_proxy_url}"
+%{ endif ~}
+
+package_update: true
+packages:
+  - qemu-guest-agent
+  - chrony
+  - python3
+  - ca-certificates
+
+%{ if length(ntp_servers) > 0 ~}
+ntp:
+  enabled: true
+  ntp_client: chrony
+  servers:
+%{ for server in ntp_servers ~}
+    - "${server}"
+%{ endfor ~}
+%{ endif ~}
+
+%{ if length(ca_certificates) > 0 ~}
+ca_certs:
+  trusted:
+%{ for cert in ca_certificates ~}
+    - |
+      ${indent(6, cert)}
+%{ endfor ~}
+%{ endif ~}
+
+runcmd:
+  - systemctl enable --now qemu-guest-agent
+  - systemctl enable --now chrony
+  # L'authentification par mot de passe est désactivée explicitement en plus
+  # de ssh_pwauth pour couvrir les drop-ins de l'image de base.
+  - printf 'PasswordAuthentication no\n' > /etc/ssh/sshd_config.d/90-eph-no-password.conf
+  - systemctl reload ssh || systemctl reload sshd

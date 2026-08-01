@@ -1,0 +1,11 @@
+# Version SOURCE de la plateforme (déploiement initial).
+# Toutes les versions sont épinglées — jamais de « dernière version ».
+# La cohérence kolla_ansible_version <-> openstack_release suit la matrice
+# officielle Kolla-Ansible ; vérifier la disponibilité des images taggées
+# via le job check_registry_images avant tout déploiement.
+---
+openstack_release: "2024.1"
+kolla_ansible_version: "18.4.0"
+ansible_core_version: "2.16.14"
+kolla_base_distro: "ubuntu"
+kolla_image_tag: "2024.1-ubuntu-jammy"

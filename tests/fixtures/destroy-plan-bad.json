@@ -1,0 +1,20 @@
+{
+  "format_version": "1.2",
+  "resource_changes": [
+    {
+      "address": "proxmox_virtual_environment_vm.nodes[\"eph-osk-upg-142-aio-01\"]",
+      "type": "proxmox_virtual_environment_vm",
+      "change": {"actions": ["delete"]}
+    },
+    {
+      "address": "netbox_vlan.rogue",
+      "type": "netbox_vlan",
+      "change": {"actions": ["delete"]}
+    },
+    {
+      "address": "netbox_prefix.rogue",
+      "type": "netbox_prefix",
+      "change": {"actions": ["delete"]}
+    }
+  ]
+}

@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gitlab.example/eph-openstack/schemas/profiles.schema.json",
+  "title": "Profils de déploiement",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["roles", "profiles"],
+  "properties": {
+    "roles": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["short", "kolla_groups"],
+        "properties": {
+          "short": {"type": "string", "pattern": "^[a-z0-9]{2,8}$"},
+          "description": {"type": "string"},
+          "kolla_groups": {
+            "type": "array",
+            "items": {"enum": ["control", "network", "compute", "storage", "monitoring"]}
+          }
+        }
+      }
+    },
+    "profiles": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["nodes"],
+        "properties": {
+          "description": {"type": "string"},
+          "nodes": {
+            "type": "object",
+            "minProperties": 1,
+            "additionalProperties": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["count", "vcpu", "memory_mb", "disk_gb", "networks"],
+              "properties": {
+                "enabled": {"type": "boolean"},
+                "count": {"type": "integer", "minimum": 1, "maximum": 32},
+                "vcpu": {"type": "integer", "minimum": 1, "maximum": 128},
+                "memory_mb": {"type": "integer", "minimum": 1024},
+                "disk_gb": {"type": "integer", "minimum": 10},
+                "nested_virtualization": {"type": "boolean"},
+                "networks": {
+                  "type": "array",
+                  "minItems": 1,
+                  "uniqueItems": true,
+                  "prefixItems": [{"const": "management"}],
+                  "items": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"}
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
