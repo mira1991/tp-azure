@@ -1,0 +1,67 @@
+# Préparation système minimale avant kolla-ansible bootstrap-servers.
+# L'installation d'OpenStack reste entièrement portée par Kolla-Ansible.
+---
+- name: Préparation des nœuds pour Kolla-Ansible
+  hosts: all
+  gather_facts: true
+  tasks:
+    - name: Construire /etc/hosts avec toutes les IP management
+      ansible.builtin.blockinfile:
+        path: /etc/hosts
+        marker: "# {mark} EPH-OPENSTACK MANAGED"
+        block: |
+          {% for host in groups['all'] %}
+          {{ hostvars[host]['ansible_host'] }} {{ host }}
+          {% endfor %}
+
+    - name: Activer le routage IP (requis par Neutron)
+      ansible.posix.sysctl:
+        name: net.ipv4.ip_forward
+        value: "1"
+        state: present
+        sysctl_set: true
+
+    - name: Charger br_netfilter au démarrage
+      ansible.builtin.copy:
+        dest: /etc/modules-load.d/eph-openstack.conf
+        content: |
+          br_netfilter
+        mode: "0644"
+
+    - name: Charger br_netfilter immédiatement
+      community.general.modprobe:
+        name: br_netfilter
+        state: present
+
+    - name: Désactiver ufw s'il est présent (Kolla gère les flux)
+      ansible.builtin.systemd:
+        name: ufw
+        state: stopped
+        enabled: false
+      failed_when: false
+
+    - name: Installer les paquets requis par kolla bootstrap
+      ansible.builtin.apt:
+        name:
+          - python3-pip
+          - python3-venv
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+- name: Préparer le volume group cinder sur les nœuds storage
+  hosts: storage
+  gather_facts: false
+  tasks:
+    - name: Vérifier la présence du volume group cinder-volumes
+      ansible.builtin.command: vgs cinder-volumes
+      register: cinder_vg
+      changed_when: false
+      failed_when: false
+
+    - name: Avertir si cinder-volumes est absent (LVM backend indisponible)
+      ansible.builtin.debug:
+        msg: >-
+          Volume group 'cinder-volumes' absent : le backend LVM de Cinder ne
+          fonctionnera pas sur {{ inventory_hostname }}. Voir docs/KOLLA.md.
+      when: cinder_vg.rc != 0

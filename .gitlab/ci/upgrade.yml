@@ -1,0 +1,175 @@
+# Stage upgrade (RUN_UPGRADE=true) — bascule de la version source vers la
+# version cible SANS recréer les VM Proxmox ni changer de passwords.yml.
+# Ordonnancement au sein du stage par needs :
+#   gate -> workload -> prechecks -> upgrade -> verify
+
+.upgrade_base:
+  extends: [.environment_lock]
+  stage: upgrade
+  image: "${TOOLBOX_IMAGE}"
+  variables:
+    KOLLA_VENV: "target"
+    ANSIBLE_CONFIG: "${CI_PROJECT_DIR}/ansible/ansible.cfg"
+    ANSIBLE_HOST_KEY_CHECKING: "false"
+    OS_CLOUD: "eph"
+    OS_CLIENT_CONFIG_FILE: "${CI_PROJECT_DIR}/.osc/clouds.yaml"
+  rules:
+    - if: '$RUN_UPGRADE != "true"'
+      when: never
+    - !reference [.rules_deploy, rules]
+  before_script:
+    - !reference [.ssh_agent, before_script]
+    - export KOLLA_CONFIG_DIR="${CI_PROJECT_DIR}/.kolla"
+    - mkdir -p .osc
+    - trap 'shred -u .osc/clouds.yaml 2>/dev/null || true' EXIT
+    - python3 scripts/render-terraform-outputs.py clouds
+      --outputs substrate-outputs.json
+      --passwords .kolla/passwords.yml
+      --out .osc/clouds.yaml
+
+# Approbation manuelle obligatoire avant tout upgrade.
+upgrade_gate:
+  extends: .upgrade_base
+  before_script: []
+  needs:
+    - resolve_environment
+    - test_openstack
+  rules:
+    - if: '$RUN_UPGRADE != "true"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "push"'
+      when: never
+    - when: manual
+      allow_failure: false
+  script:
+    - echo "Upgrade approuvé pour ${ENVIRONMENT_NAME} (source -> target)."
+
+# Charge de travail persistante : VM + volume qui doivent survivre à
+# l'upgrade. Opérations impératives de test : la CLI OpenStack est le bon
+# outil ici (pas le provider Terraform).
+pre_upgrade_workload:
+  extends: .upgrade_base
+  needs:
+    - resolve_environment
+    - substrate_apply
+    - kolla_generate_config
+    - openstack_config_apply
+    - upgrade_gate
+  script:
+    - mkdir -p reports artifacts/upgrade
+    - pytest tests/smoke/test_openstack_smoke.py -v --junitxml=reports/pre-upgrade.xml
+    - |
+      smoke_net="$(jq -r '.smoke_context.value.network_id' openstack-config-outputs.json)"
+      image="$(jq -r '.smoke_context.value.image_name' openstack-config-outputs.json)"
+      openstack server create --flavor eph.tiny --image "${image}" \
+        --network "${smoke_net}" --wait "${ENVIRONMENT_NAME}-upgrade-witness"
+      openstack volume create --size 1 "${ENVIRONMENT_NAME}-upgrade-volume"
+      openstack server add volume "${ENVIRONMENT_NAME}-upgrade-witness" "${ENVIRONMENT_NAME}-upgrade-volume"
+      openstack server show "${ENVIRONMENT_NAME}-upgrade-witness" -f json > artifacts/upgrade/witness-before.json
+      openstack service list -f json > artifacts/upgrade/services-before.json
+  artifacts:
+    when: always
+    reports:
+      junit: reports/pre-upgrade.xml
+    paths:
+      - reports/
+      - artifacts/upgrade/
+    expire_in: 30 days
+
+kolla_upgrade_prechecks:
+  extends: .upgrade_base
+  needs:
+    - resolve_environment
+    - substrate_apply
+    - generate_inventory
+    - kolla_generate_config
+    - pre_upgrade_workload
+  script:
+    # Bascule des versions : globals.yml re-rendu avec kolla/versions/target.yml,
+    # MÊME passwords.yml, MÊME substrate.
+    - python3 scripts/render-terraform-outputs.py globals
+      --outputs substrate-outputs.json
+      --template kolla/globals.yml.j2
+      --versions kolla/versions/target.yml
+      --out "${KOLLA_CONFIG_DIR}/globals.yml"
+    - kolla-ansible prechecks -i artifacts/inventory/multinode
+      --configdir "${KOLLA_CONFIG_DIR}" --passwords "${KOLLA_CONFIG_DIR}/passwords.yml"
+  artifacts:
+    access: developer
+    paths:
+      - .kolla/
+    expire_in: 7 days
+
+kolla_upgrade:
+  extends: .upgrade_base
+  timeout: 4h
+  needs:
+    - resolve_environment
+    - substrate_apply
+    - generate_inventory
+    - kolla_upgrade_prechecks
+  script:
+    - kolla-ansible upgrade -i artifacts/inventory/multinode
+      --configdir "${KOLLA_CONFIG_DIR}" --passwords "${KOLLA_CONFIG_DIR}/passwords.yml"
+  after_script:
+    - if [ "${CI_JOB_STATUS}" != "success" ]; then
+      bash scripts/collect-logs.sh substrate-outputs.json artifacts/logs || true; fi
+  artifacts:
+    when: on_failure
+    paths:
+      - artifacts/logs/
+    expire_in: 30 days
+
+post_upgrade_verify:
+  extends: .upgrade_base
+  needs:
+    - resolve_environment
+    - substrate_apply
+    - kolla_upgrade_prechecks
+    - kolla_upgrade
+    - pre_upgrade_workload
+  script:
+    - mkdir -p reports artifacts/upgrade
+    - |
+      openstack service list -f json > artifacts/upgrade/services-after.json
+      openstack server show "${ENVIRONMENT_NAME}-upgrade-witness" -f json > artifacts/upgrade/witness-after.json
+      status="$(jq -r '.status' artifacts/upgrade/witness-after.json)"
+      if [ "${status}" != "ACTIVE" ]; then
+        echo "La VM témoin n'est plus ACTIVE après upgrade (statut: ${status})." >&2
+        exit 1
+      fi
+    - pytest tests/smoke/test_openstack_smoke.py -v --junitxml=reports/post-upgrade.xml
+    - |
+      python3 - <<'PYEOF'
+      import json
+
+      def load(path: str):
+          with open(path, encoding="utf-8") as handle:
+              return json.load(handle)
+
+      before = {service["Name"] for service in load("artifacts/upgrade/services-before.json")}
+      after = {service["Name"] for service in load("artifacts/upgrade/services-after.json")}
+      report = {
+          "services_before": sorted(before),
+          "services_after": sorted(after),
+          "services_lost": sorted(before - after),
+          "witness_before": load("artifacts/upgrade/witness-before.json")["status"],
+          "witness_after": load("artifacts/upgrade/witness-after.json")["status"],
+      }
+      with open("artifacts/upgrade/upgrade-report.json", "w", encoding="utf-8") as handle:
+          json.dump(report, handle, indent=2)
+      if report["services_lost"]:
+          raise SystemExit(f"Services perdus pendant l'upgrade : {report['services_lost']}")
+      print("Rapport avant/après écrit : artifacts/upgrade/upgrade-report.json")
+      PYEOF
+    - openstack server remove volume "${ENVIRONMENT_NAME}-upgrade-witness" "${ENVIRONMENT_NAME}-upgrade-volume" || true
+    - openstack server delete --wait "${ENVIRONMENT_NAME}-upgrade-witness"
+    - openstack volume delete "${ENVIRONMENT_NAME}-upgrade-volume"
+  artifacts:
+    when: always
+    reports:
+      junit: reports/post-upgrade.xml
+    paths:
+      - reports/
+      - artifacts/upgrade/
+    expire_in: 30 days

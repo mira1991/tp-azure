@@ -1,0 +1,43 @@
+# Terraform
+**/.terraform/
+*.tfstate
+*.tfstate.*
+tfplan*.bin
+tfdestroy*.bin
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraform.d/
+
+# Secrets et fichiers générés — ne JAMAIS versionner
+passwords.yml
+!passwords.yml.example
+clouds.yaml
+openrc*
+*.pem
+*.key
+!**/fixtures/**
+.kolla/
+.osc/
+
+# Artefacts de pipeline / rapports
+artifacts/
+reports/
+substrate-outputs.json
+openstack-config-outputs.json
+environment.env
+expired.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# Divers
+*.swp
+.DS_Store

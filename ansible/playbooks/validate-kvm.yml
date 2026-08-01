@@ -1,0 +1,44 @@
+# Validation du KVM imbriqué sur les computes : /dev/kvm, modules kvm et
+# extensions vmx/svm exposées. Échec explicite si la virtualisation imbriquée
+# n'est pas disponible (cpu type 'host' requis côté Proxmox).
+---
+- name: Validation de la virtualisation imbriquée sur les computes
+  hosts: compute
+  gather_facts: false
+  tasks:
+    - name: Vérifier la présence de /dev/kvm
+      ansible.builtin.stat:
+        path: /dev/kvm
+      register: dev_kvm
+
+    - name: Compter les extensions vmx/svm dans /proc/cpuinfo
+      ansible.builtin.shell: |
+        set -o pipefail
+        grep -Ec '(vmx|svm)' /proc/cpuinfo || true
+      args:
+        executable: /bin/bash
+      register: cpu_flags
+      changed_when: false
+
+    - name: Vérifier le chargement des modules kvm
+      ansible.builtin.shell: |
+        set -o pipefail
+        lsmod | grep -E '^kvm' || true
+      args:
+        executable: /bin/bash
+      register: kvm_modules
+      changed_when: false
+
+    - name: Échouer si la virtualisation imbriquée est indisponible
+      ansible.builtin.assert:
+        that:
+          - dev_kvm.stat.exists
+          - (cpu_flags.stdout | int) > 0
+          - kvm_modules.stdout | length > 0
+        fail_msg: >-
+          Virtualisation imbriquée indisponible sur {{ inventory_hostname }} :
+          /dev/kvm={{ dev_kvm.stat.exists }}, flags vmx/svm={{ cpu_flags.stdout }},
+          modules kvm='{{ kvm_modules.stdout }}'. Vérifier que le cpu type Proxmox
+          est 'host' et que le nested KVM est activé sur l'hyperviseur
+          (docs/PROXMOX.md). NOTE : les performances en KVM imbriqué ne sont
+          pas représentatives d'un déploiement bare metal.

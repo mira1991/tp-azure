@@ -1,0 +1,216 @@
+# Pipeline GitLab CI/CD — plateforme OpenStack éphémère (Proxmox + Kolla-Ansible),
+# cycle de vie piloté par Terraform (NetBox + Proxmox + OpenStack).
+#
+# Types de pipelines :
+#   - merge request : validation seule (déploiement si DEPLOY_FROM_MERGE_REQUEST=true) ;
+#   - push branche par défaut : validation seule ;
+#   - web / trigger / api : cycle complet (apply sous approbation manuelle,
+#     sauf AUTO_APPLY=true) ;
+#   - schedule + REAPER=true : détection des environnements expirés, qui
+#     déclenche des pipelines TEARDOWN_ONLY=true ciblées ;
+#   - trigger + TEARDOWN_ONLY=true : teardown d'un environnement existant.
+
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_PIPELINE_SOURCE =~ /^(web|trigger|api|schedule|pipeline)$/'
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+
+stages:
+  - validate
+  - preflight
+  - substrate_plan
+  - substrate_apply
+  - wait
+  - inventory
+  - bootstrap
+  - kolla_prechecks
+  - kolla_deploy
+  - openstack_config_plan
+  - openstack_config_apply
+  - test
+  - upgrade
+  - publish
+  - destroy_openstack_config
+  - kolla_destroy
+  - destroy_substrate
+  - verify_cleanup
+  - close
+
+default:
+  image: "${TOOLBOX_IMAGE}"
+  interruptible: false
+
+variables:
+  # Image toolbox versionnée (ci/Dockerfile) — jamais de latest.
+  TOOLBOX_IMAGE: "${CI_REGISTRY_IMAGE}/toolbox:1.0.0"
+
+  # ----- Identité de l'environnement --------------------------------------
+  ENVIRONMENT_ID:
+    value: "${CI_PIPELINE_IID}"
+    description: "Identifiant unique de l'environnement (défaut : IID de pipeline). À surcharger pour relance/teardown."
+  PURPOSE_SHORT:
+    value: "dev"
+    description: "Code court de l'usage (upg, dev, ci...) : eph-osk-<purpose_short>-<id>."
+  ENVIRONMENT_NAME: "eph-osk-${PURPOSE_SHORT}-${ENVIRONMENT_ID}"
+  SUBSTRATE_STATE_NAME: "${ENVIRONMENT_NAME}-substrate"
+  OPENSTACK_STATE_NAME: "${ENVIRONMENT_NAME}-openstack-config"
+  ENVIRONMENT_OWNER: "${GITLAB_USER_LOGIN}"
+  ENVIRONMENT_PURPOSE: "ephemeral-openstack"
+  ENVIRONMENT_TTL_HOURS:
+    value: "48"
+    description: "TTL de l'environnement en heures (expires_at = created_at + TTL)."
+
+  # ----- Topologie --------------------------------------------------------
+  DEPLOYMENT_PROFILE:
+    value: "minimal"
+    options: ["minimal", "ha"]
+    description: "Profil de déploiement (config/profiles.yml)."
+  PLACEMENT_STRATEGY:
+    value: "spread"
+    options: ["spread", "pack", "manual"]
+    description: "Stratégie de placement des VM sur les nœuds Proxmox."
+  TERRAFORM_PHASE:
+    value: "full"
+    options: ["full", "allocate"]
+    description: "Mode 2 phases dans le même state (allocate = réservations NetBox seules)."
+  TWO_PHASE_APPLY:
+    value: "false"
+    description: "true = apply intermédiaire en phase allocate avant l'apply full."
+
+  # ----- Comportement de la pipeline --------------------------------------
+  AUTO_APPLY:
+    value: "false"
+    description: "true = pas d'approbation manuelle avant les terraform apply."
+  AUTO_DEPLOY:
+    value: "false"
+    description: "true = enchaîne le déploiement sans gate manuelle."
+  AUTO_TEARDOWN:
+    value: "false"
+    description: "true = teardown automatique en fin de pipeline (ou pipeline TEARDOWN_ONLY)."
+  DEPLOY_FROM_MERGE_REQUEST:
+    value: "false"
+    description: "true = autorise un déploiement complet depuis une pipeline de merge request."
+  TEARDOWN_ONLY:
+    value: "false"
+    description: "true = pipeline de teardown d'un environnement existant (fournir ENVIRONMENT_ID/PURPOSE_SHORT)."
+  REAPER:
+    value: "false"
+    description: "true (pipelines planifiées) = détection des environnements expirés."
+  FORCE_CLEANUP_CONFIRMATION:
+    value: ""
+    description: "Nom exact de l'environnement, exigé par le mode break-glass (docs/RECOVERY.md)."
+
+  # ----- Upgrade ----------------------------------------------------------
+  RUN_UPGRADE:
+    value: "false"
+    description: "true = déroule le workflow d'upgrade (source -> target) après les tests."
+
+  # ----- Tests optionnels -------------------------------------------------
+  RUN_OCTAVIA_TESTS: "false"
+  RUN_DESIGNATE_TESTS: "false"
+  RUN_CINDER_TESTS: "true"
+  RUN_LIVE_MIGRATION_TESTS: "false"
+
+  # ----- NetBox (objets permanents, résolus par nom) ----------------------
+  NETBOX_EPHEMERAL_IP_STATUS: "reserved"
+  # NETBOX_SITE / NETBOX_TENANT / NETBOX_CLUSTER / NETBOX_VLAN_GROUP /
+  # NETWORK_ROLE_* : variables de projet/groupe (docs/PIPELINE.md).
+
+  # ----- Kolla ------------------------------------------------------------
+  KOLLA_PASSWORDS_MODE:
+    value: "generate"
+    options: ["generate", "vault"]
+    description: "Origine de passwords.yml : kolla-genpwd ou Vault."
+
+  # ----- Terraform --------------------------------------------------------
+  TF_IN_AUTOMATION: "1"
+  TF_INPUT: "0"
+  TF_PLUGIN_CACHE_DIR: "${CI_PROJECT_DIR}/.terraform.d/plugin-cache"
+
+include:
+  - local: ".gitlab/ci/validate.yml"
+  - local: ".gitlab/ci/preflight.yml"
+  - local: ".gitlab/ci/substrate.yml"
+  - local: ".gitlab/ci/kolla.yml"
+  - local: ".gitlab/ci/openstack-config.yml"
+  - local: ".gitlab/ci/tests.yml"
+  - local: ".gitlab/ci/upgrade.yml"
+  - local: ".gitlab/ci/teardown.yml"
+
+# ---------------------------------------------------------------------------
+# Templates partagés
+# ---------------------------------------------------------------------------
+
+# Jobs de validation : toutes pipelines sauf teardown-only et reaper.
+.rules_validate:
+  rules:
+    - if: '$TEARDOWN_ONLY == "true"'
+      when: never
+    - if: '$REAPER == "true"'
+      when: never
+    - when: on_success
+
+# Jobs de déploiement : jamais sur push ni MR sans opt-in explicite.
+.rules_deploy:
+  rules:
+    - if: '$TEARDOWN_ONLY == "true"'
+      when: never
+    - if: '$REAPER == "true"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "push"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $DEPLOY_FROM_MERGE_REQUEST != "true"'
+      when: never
+    - when: on_success
+
+# Applies : approbation manuelle par défaut (AUTO_APPLY=true pour enchaîner).
+.rules_apply_gate:
+  rules:
+    - if: '$TEARDOWN_ONLY == "true"'
+      when: never
+    - if: '$REAPER == "true"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "push"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $DEPLOY_FROM_MERGE_REQUEST != "true"'
+      when: never
+    - if: '$AUTO_APPLY == "true"'
+      when: on_success
+    - when: manual
+      allow_failure: false
+
+# Teardown : disponible dans les pipelines de déploiement et TEARDOWN_ONLY.
+# AUTO_TEARDOWN=true => automatique et exécuté même après échec (when: always).
+.rules_teardown_auto:
+  rules:
+    - if: '$REAPER == "true"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "push"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $DEPLOY_FROM_MERGE_REQUEST != "true"'
+      when: never
+    - if: '$AUTO_TEARDOWN == "true"'
+      when: always
+    - when: manual
+
+# Sérialisation par environnement : tous les jobs qui touchent l'un des deux
+# states du même environnement partagent ce resource_group.
+.environment_lock:
+  resource_group: "eph-osk-${ENVIRONMENT_ID}"
+
+# Agent SSH pour les jobs qui accèdent aux VM et/ou aux nœuds Proxmox
+# (snippets bpg). Clés privées uniquement en mémoire d'agent, nettoyées par
+# trap. Jamais de `set -x` dans ces jobs.
+.ssh_agent:
+  before_script:
+    - eval "$(ssh-agent -s)" > /dev/null
+    - trap 'ssh-agent -k > /dev/null 2>&1 || true' EXIT
+    - umask 077 && mkdir -p ~/.ssh
+    - if [ -n "${SSH_KNOWN_HOSTS:-}" ]; then printf '%s\n' "${SSH_KNOWN_HOSTS}" > ~/.ssh/known_hosts; fi
+    - printf '%s\n' "${SSH_PRIVATE_KEY:?SSH_PRIVATE_KEY manquant}" | tr -d '\r' | ssh-add - > /dev/null
+    - if [ -n "${PROXMOX_SSH_PRIVATE_KEY:-}" ]; then printf '%s\n' "${PROXMOX_SSH_PRIVATE_KEY}" | tr -d '\r' | ssh-add - > /dev/null; fi

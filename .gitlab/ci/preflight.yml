@@ -1,0 +1,145 @@
+# Stage preflight — résolution de l'identité de l'environnement et contrôles
+# de préconditions (variables, APIs joignables, images présentes).
+# Lecture seule : aucune ressource n'est créée ici.
+
+# Calcule created_at / expires_at une fois pour toute la pipeline et publie
+# le tout en dotenv (consommé par tous les jobs suivants).
+resolve_environment:
+  stage: preflight
+  needs: []
+  rules:
+    - if: '$REAPER == "true"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "push"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $DEPLOY_FROM_MERGE_REQUEST != "true"'
+      when: never
+    - when: on_success
+  script:
+    - |
+      CREATED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      EXPIRES_AT="$(python3 -c "
+      import datetime
+      created = datetime.datetime.strptime('${CREATED_AT}', '%Y-%m-%dT%H:%M:%SZ')
+      print((created + datetime.timedelta(hours=int('${ENVIRONMENT_TTL_HOURS}'))).strftime('%Y-%m-%dT%H:%M:%SZ'))
+      ")"
+      {
+        echo "ENVIRONMENT_ID=${ENVIRONMENT_ID}"
+        echo "ENVIRONMENT_NAME=${ENVIRONMENT_NAME}"
+        echo "SUBSTRATE_STATE_NAME=${SUBSTRATE_STATE_NAME}"
+        echo "OPENSTACK_STATE_NAME=${OPENSTACK_STATE_NAME}"
+        echo "CREATED_AT=${CREATED_AT}"
+        echo "EXPIRES_AT=${EXPIRES_AT}"
+      } > environment.env
+      echo "Environnement: ${ENVIRONMENT_NAME} (TTL ${ENVIRONMENT_TTL_HOURS}h, expire ${EXPIRES_AT})"
+  artifacts:
+    reports:
+      dotenv: environment.env
+    expire_in: 30 days
+
+check_required_variables:
+  extends: .rules_deploy
+  stage: preflight
+  needs: ["resolve_environment"]
+  script:
+    - |
+      missing=""
+      for var_name in PROXMOX_API_URL PROXMOX_TOKEN_ID PROXMOX_TOKEN_SECRET \
+                      NETBOX_URL NETBOX_TOKEN \
+                      NETBOX_SITE NETBOX_TENANT NETBOX_CLUSTER NETBOX_VLAN_GROUP \
+                      NETWORK_ROLE_MANAGEMENT \
+                      PROXMOX_TARGET_NODES PROXMOX_TEMPLATE PROXMOX_STORAGE \
+                      SSH_PRIVATE_KEY SSH_PUBLIC_KEY \
+                      KOLLA_REGISTRY KOLLA_IMAGE_TAG; do
+        eval "value=\${${var_name}:-}"
+        if [ -z "${value}" ]; then missing="${missing} ${var_name}"; fi
+      done
+      if [ -n "${missing}" ]; then
+        echo "Variables manquantes :${missing}" >&2
+        exit 1
+      fi
+      echo "Toutes les variables requises sont présentes (valeurs non affichées)."
+
+check_netbox_api:
+  extends: .rules_deploy
+  stage: preflight
+  needs: ["resolve_environment"]
+  script:
+    - curl --silent --show-error --fail --max-time 20
+      --header "Authorization:Token ${NETBOX_TOKEN}"
+      "${NETBOX_URL%/}/api/status/" > /dev/null
+    - echo "NetBox joignable."
+
+check_proxmox_api:
+  extends: .rules_deploy
+  stage: preflight
+  needs: ["resolve_environment"]
+  script:
+    - |
+      curl_opts="--silent --show-error --fail --max-time 20"
+      if [ "${PROXMOX_INSECURE:-false}" = "true" ]; then curl_opts="${curl_opts} --insecure"; fi
+      # shellcheck disable=SC2086
+      curl ${curl_opts} --header "Authorization:PVEAPIToken=${PROXMOX_TOKEN_ID}=${PROXMOX_TOKEN_SECRET}" \
+        "${PROXMOX_API_URL%/}/version" > /dev/null
+      echo "Proxmox joignable."
+
+check_registry_images:
+  extends: .rules_deploy
+  stage: preflight
+  needs: ["resolve_environment"]
+  script:
+    - python3 scripts/check-registry-images.py
+
+# Pipeline planifiée de TTL : détecte les environnements expirés et déclenche
+# une pipeline TEARDOWN_ONLY par environnement. La suppression passe TOUJOURS
+# par Terraform dans la pipeline déclenchée — jamais par l'API directement.
+reap_expired_environments:
+  stage: preflight
+  needs: []
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $REAPER == "true"'
+  script:
+    - python3 scripts/detect-orphans.py --mode expired --out expired.json
+    - |
+      python3 - <<'PYEOF'
+      import json
+      import os
+      import urllib.parse
+      import urllib.request
+
+      with open("expired.json", encoding="utf-8") as handle:
+          report = json.load(handle)
+
+      api = os.environ["CI_API_V4_URL"]
+      project = urllib.parse.quote_plus(os.environ["CI_PROJECT_ID"])
+      ref = os.environ["CI_DEFAULT_BRANCH"]
+      token = os.environ["CI_JOB_TOKEN"]
+
+      for env in report["expired_environments"]:
+          name = env["environment_name"]
+          parts = name.split("-")  # eph-osk-<purpose>-<id>
+          purpose = parts[2] if len(parts) >= 4 else "dev"
+          data = urllib.parse.urlencode(
+              {
+                  "token": token,
+                  "ref": ref,
+                  "variables[TEARDOWN_ONLY]": "true",
+                  "variables[AUTO_TEARDOWN]": "true",
+                  "variables[ENVIRONMENT_ID]": env["environment_id"],
+                  "variables[PURPOSE_SHORT]": purpose,
+              }
+          ).encode()
+          request = urllib.request.Request(f"{api}/projects/{project}/trigger/pipeline", data=data)
+          with urllib.request.urlopen(request) as response:
+              payload = json.load(response)
+          print(f"Teardown déclenché pour {name}: pipeline {payload.get('id')}")
+
+      if not report["expired_environments"]:
+          print("Aucun environnement expiré.")
+      PYEOF
+  artifacts:
+    when: always
+    paths: ["expired.json"]
+    expire_in: 30 days

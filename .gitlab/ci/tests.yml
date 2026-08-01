@@ -1,0 +1,98 @@
+# Stage test — vérifications NetBox, Proxmox/nœuds et OpenStack (smoke).
+# Tous les résultats sont publiés en JUnit.
+
+.test_base:
+  extends: .rules_deploy
+  stage: test
+  image: "${TOOLBOX_IMAGE}"
+  variables:
+    TF_OUTPUTS_FILE: "${CI_PROJECT_DIR}/substrate-outputs.json"
+  artifacts:
+    when: always
+    reports:
+      junit: reports/*.xml
+    paths:
+      - reports/
+    expire_in: 30 days
+
+test_netbox:
+  extends: .test_base
+  needs:
+    - resolve_environment
+    - substrate_apply
+  script:
+    - pytest tests/integration/test_netbox.py -v --junitxml=reports/netbox.xml
+
+test_proxmox:
+  extends: .test_base
+  needs:
+    - resolve_environment
+    - substrate_apply
+  before_script:
+    - !reference [.ssh_agent, before_script]
+  script:
+    - pytest tests/integration/test_proxmox.py -v --junitxml=reports/proxmox.xml
+
+test_openstack:
+  extends: .test_base
+  variables:
+    OS_CLOUD: "eph"
+    OS_CLIENT_CONFIG_FILE: "${CI_PROJECT_DIR}/.osc/clouds.yaml"
+  needs:
+    - resolve_environment
+    - substrate_apply
+    - kolla_generate_config
+    - kolla_deploy
+    - openstack_config_apply
+  before_script:
+    - mkdir -p .osc
+    - trap 'shred -u .osc/clouds.yaml 2>/dev/null || true' EXIT
+    - python3 scripts/render-terraform-outputs.py clouds
+      --outputs substrate-outputs.json
+      --passwords .kolla/passwords.yml
+      --out .osc/clouds.yaml
+  script:
+    - pytest tests/smoke -v --junitxml=reports/openstack.xml
+
+# Stage publish : rapport consolidé de l'environnement (manifeste + résultats).
+publish_environment_report:
+  extends: .rules_deploy
+  stage: publish
+  image: "${TOOLBOX_IMAGE}"
+  needs:
+    - resolve_environment
+    - substrate_apply
+    - job: test_netbox
+      optional: true
+    - job: test_proxmox
+      optional: true
+    - job: test_openstack
+      optional: true
+  script:
+    - mkdir -p artifacts/report
+    - cp artifacts/environment-manifest.json artifacts/report/ 2>/dev/null || true
+    - cp -r reports artifacts/report/ 2>/dev/null || true
+    - |
+      python3 - <<'PYEOF'
+      import datetime
+      import json
+      import os
+      import pathlib
+
+      summary = {
+          "environment_id": os.environ.get("ENVIRONMENT_ID", ""),
+          "environment_name": os.environ.get("ENVIRONMENT_NAME", ""),
+          "created_at": os.environ.get("CREATED_AT", ""),
+          "expires_at": os.environ.get("EXPIRES_AT", ""),
+          "pipeline_url": os.environ.get("CI_PIPELINE_URL", ""),
+          "deployment_profile": os.environ.get("DEPLOYMENT_PROFILE", ""),
+          "generated_at": datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+          "junit_reports": sorted(str(p) for p in pathlib.Path("reports").glob("*.xml")) if pathlib.Path("reports").exists() else [],
+      }
+      pathlib.Path("artifacts/report/summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+      print(json.dumps(summary, indent=2))
+      PYEOF
+  artifacts:
+    paths:
+      - artifacts/report/
+    expire_in: 30 days

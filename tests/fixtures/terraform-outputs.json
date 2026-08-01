@@ -1,0 +1,140 @@
+{
+  "environment_manifest": {
+    "value": {
+      "environment_id": 142,
+      "environment_name": "eph-osk-upg-142",
+      "purpose_short": "upg",
+      "purpose": "unit-test",
+      "owner": "ci",
+      "deployment_profile": "minimal",
+      "placement_strategy": "spread",
+      "terraform_phase": "full",
+      "created_at": "2025-12-30T00:00:00Z",
+      "expires_at": "2026-01-01T00:00:00Z",
+      "ttl_hours": 48,
+      "pipeline_id": "9999",
+      "pipeline_url": "https://gitlab.example/pipelines/9999",
+      "project_path": "lab/eph-openstack",
+      "node_count": 2,
+      "internal_vip": "192.0.2.20",
+      "managed_by": "terraform-gitlab"
+    }
+  },
+  "globals_context": {
+    "value": {
+      "environment_name": "eph-osk-upg-142",
+      "environment_id": "142",
+      "kolla_internal_vip_address": "192.0.2.20",
+      "network_interface": "eth0",
+      "management_cidr": "192.0.2.0/24"
+    }
+  },
+  "kolla_inventory": {
+    "value": "[control]\neph-osk-upg-142-aio-01\n\n[network]\neph-osk-upg-142-aio-01\n\n[compute]\neph-osk-upg-142-aio-01\n\n[monitoring]\neph-osk-upg-142-aio-01\n\n[storage]\neph-osk-upg-142-aio-01\n\n[deployment]\neph-osk-upg-142-deploy-01\n\n[all:vars]\nansible_user=kolla\nansible_become=true\n"
+  },
+  "kolla_host_vars": {
+    "value": {
+      "eph-osk-upg-142-deploy-01": "---\nansible_host: 192.0.2.11\nansible_user: kolla\nnetwork_interface: eth0\n",
+      "eph-osk-upg-142-aio-01": "---\nansible_host: 192.0.2.12\nansible_user: kolla\nnetwork_interface: eth0\napi_interface: eth1\ntunnel_interface: eth2\nneutron_external_interface: eth3\n"
+    }
+  },
+  "management_ips": {
+    "value": {
+      "eph-osk-upg-142-deploy-01": "192.0.2.11",
+      "eph-osk-upg-142-aio-01": "192.0.2.12"
+    }
+  },
+  "internal_vip_address": {
+    "value": "192.0.2.20"
+  },
+  "ssh_targets": {
+    "value": [
+      "kolla@192.0.2.11",
+      "kolla@192.0.2.12"
+    ]
+  },
+  "nodes": {
+    "value": {
+      "eph-osk-upg-142-deploy-01": {
+        "role": "deploy",
+        "management_ip": "192.0.2.11",
+        "proxmox_node": "pve-01",
+        "interfaces": {
+          "management": {
+            "ip_address": "192.0.2.11",
+            "cidr": "192.0.2.11/24",
+            "mac_address": "BC:24:11:8E:01:00",
+            "vlan_id": 100,
+            "bridge": "vmbr0",
+            "linux_name": "eth0",
+            "mtu": 1500
+          }
+        }
+      },
+      "eph-osk-upg-142-aio-01": {
+        "role": "aio",
+        "management_ip": "192.0.2.12",
+        "proxmox_node": "pve-02",
+        "interfaces": {
+          "management": {
+            "ip_address": "192.0.2.12",
+            "cidr": "192.0.2.12/24",
+            "mac_address": "BC:24:11:8E:00:00",
+            "vlan_id": 100,
+            "bridge": "vmbr0",
+            "linux_name": "eth0",
+            "mtu": 1500
+          },
+          "provider": {
+            "ip_address": null,
+            "cidr": null,
+            "mac_address": "BC:24:11:8E:00:03",
+            "vlan_id": 103,
+            "bridge": "vmbr1",
+            "linux_name": "eth3",
+            "mtu": 1500
+          }
+        }
+      }
+    }
+  },
+  "netbox_resources": {
+    "value": {
+      "virtual_machines": {
+        "eph-osk-upg-142-deploy-01": "101",
+        "eph-osk-upg-142-aio-01": "102"
+      },
+      "interfaces": {
+        "eph-osk-upg-142-deploy-01/management": "201",
+        "eph-osk-upg-142-aio-01/management": "202"
+      },
+      "ip_addresses": {
+        "eph-osk-upg-142-deploy-01/management": {
+          "id": "301",
+          "ip_address": "192.0.2.11/24"
+        },
+        "eph-osk-upg-142-aio-01/management": {
+          "id": "302",
+          "ip_address": "192.0.2.12/24"
+        }
+      },
+      "internal_vip": {
+        "id": "310",
+        "ip_address": "192.0.2.20/24"
+      },
+      "environment_tag": "environment-142"
+    }
+  },
+  "proxmox_resources": {
+    "value": {
+      "eph-osk-upg-142-deploy-01": {
+        "vm_id": 4200,
+        "node_name": "pve-01"
+      },
+      "eph-osk-upg-142-aio-01": {
+        "vm_id": 4201,
+        "node_name": "pve-02"
+      }
+    }
+  }
+}

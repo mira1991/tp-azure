@@ -1,0 +1,37 @@
+[project]
+name = "eph-openstack-platform"
+version = "1.0.0"
+description = "Environnements OpenStack éphémères sur Proxmox — cycle de vie Terraform (NetBox/Proxmox/OpenStack) orchestré par GitLab CI/CD"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+extend-exclude = [".terraform"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "PL"]
+ignore = [
+    "PLR0912", # scripts CLI : branches nombreuses acceptées
+    "PLR0915",
+    "PLR2004", # constantes littérales dans les assertions de tests
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["PLR0913"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = false
+check_untyped_defs = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = true
+ignore_missing_imports = true
+exclude = ["\\.terraform"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+pythonpath = ["."]

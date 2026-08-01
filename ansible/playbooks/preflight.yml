@@ -1,0 +1,41 @@
+# Contrôles de base après provisionnement (lecture seule).
+---
+- name: Préflight des nœuds éphémères
+  hosts: all
+  gather_facts: true
+  tasks:
+    - name: Vérifier la distribution supportée
+      ansible.builtin.assert:
+        that:
+          - ansible_facts['os_family'] == 'Debian'
+        fail_msg: >-
+          Distribution non supportée ({{ ansible_facts['distribution'] }}) :
+          le template Proxmox doit être une image cloud Ubuntu (docs/PROXMOX.md).
+
+    - name: Vérifier l'espace disque disponible sur /
+      ansible.builtin.assert:
+        that:
+          - (root_mount.size_available | int) > 5 * 1024 * 1024 * 1024
+        fail_msg: "Moins de 5 Go disponibles sur / : disque cloud-init non redimensionné ?"
+      vars:
+        root_mount: "{{ ansible_facts['mounts'] | selectattr('mount', 'equalto', '/') | first }}"
+
+    - name: Vérifier que le hostname correspond au nom d'inventaire
+      ansible.builtin.assert:
+        that:
+          - ansible_facts['hostname'] == inventory_hostname
+        fail_msg: >-
+          hostname={{ ansible_facts['hostname'] }} != inventaire={{ inventory_hostname }} :
+          cloud-init n'a pas appliqué la configuration attendue.
+
+    - name: Vérifier la présence du qemu-guest-agent
+      ansible.builtin.systemd:
+        name: qemu-guest-agent
+      register: qga_state
+      check_mode: true
+
+    - name: Échouer si le qemu-guest-agent n'est pas actif
+      ansible.builtin.assert:
+        that:
+          - qga_state.status.ActiveState == 'active'
+        fail_msg: "qemu-guest-agent inactif : template Proxmox non conforme."

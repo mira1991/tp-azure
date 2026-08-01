@@ -1,0 +1,98 @@
+# Profils de déploiement des environnements OpenStack éphémères.
+#
+# Ce fichier est la SEULE source de vérité de la topologie : Terraform le
+# transforme (locals-topology.tf) en une map normalisée de VM et d'interfaces.
+# Ne jamais dupliquer ces informations dans le code Terraform.
+#
+# Contrat (validé par config/schema/profiles.schema.json) :
+#   - chaque rôle référencé dans profiles.*.nodes doit exister dans "roles" ;
+#   - le premier réseau de chaque nœud DOIT être "management" ;
+#   - chaque réseau référencé doit exister dans config/network-roles.yml.
+---
+roles:
+  deploy:
+    short: "deploy"
+    description: "Nœud de déploiement (bastion Kolla-Ansible)"
+    kolla_groups: []
+  aio:
+    short: "aio"
+    description: "All-in-one control/network/compute/storage"
+    kolla_groups: ["control", "compute", "storage", "monitoring"]
+  control:
+    short: "cpl"
+    description: "Control plane OpenStack"
+    kolla_groups: ["control", "monitoring"]
+  compute:
+    short: "cpt"
+    description: "Hyperviseur nested KVM"
+    kolla_groups: ["compute"]
+  storage:
+    short: "sto"
+    description: "Nœud stockage (cinder-volume LVM)"
+    kolla_groups: ["storage"]
+
+profiles:
+  minimal:
+    description: "Tests rapides : 1 deploy + 1 all-in-one"
+    nodes:
+      deploy:
+        count: 1
+        vcpu: 2
+        memory_mb: 4096
+        disk_gb: 40
+        networks:
+          - management
+
+      aio:
+        count: 1
+        vcpu: 12
+        memory_mb: 32768
+        disk_gb: 150
+        nested_virtualization: true
+        networks:
+          - management
+          - internal_api
+          - tunnel
+          - provider
+
+  ha:
+    description: "Upgrade / résilience : 1 deploy + 3 control + 2 compute (+1 storage optionnel)"
+    nodes:
+      deploy:
+        count: 1
+        vcpu: 2
+        memory_mb: 4096
+        disk_gb: 40
+        networks:
+          - management
+
+      control:
+        count: 3
+        vcpu: 8
+        memory_mb: 16384
+        disk_gb: 100
+        networks:
+          - management
+          - internal_api
+          - tunnel
+
+      compute:
+        count: 2
+        vcpu: 16
+        memory_mb: 32768
+        disk_gb: 150
+        nested_virtualization: true
+        networks:
+          - management
+          - tunnel
+          - provider
+
+      storage:
+        enabled: false
+        count: 1
+        vcpu: 8
+        memory_mb: 16384
+        disk_gb: 300
+        networks:
+          - management
+          - storage

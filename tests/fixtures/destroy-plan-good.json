@@ -1,0 +1,35 @@
+{
+  "format_version": "1.2",
+  "resource_changes": [
+    {
+      "address": "proxmox_virtual_environment_vm.nodes[\"eph-osk-upg-142-aio-01\"]",
+      "type": "proxmox_virtual_environment_vm",
+      "change": {"actions": ["delete"]}
+    },
+    {
+      "address": "netbox_available_ip_address.interfaces[\"eph-osk-upg-142-aio-01/management\"]",
+      "type": "netbox_available_ip_address",
+      "change": {"actions": ["delete"]}
+    },
+    {
+      "address": "netbox_interface.interfaces[\"eph-osk-upg-142-aio-01/management\"]",
+      "type": "netbox_interface",
+      "change": {"actions": ["delete"]}
+    },
+    {
+      "address": "netbox_virtual_machine.nodes[\"eph-osk-upg-142-aio-01\"]",
+      "type": "netbox_virtual_machine",
+      "change": {"actions": ["delete"]}
+    },
+    {
+      "address": "netbox_tag.environment",
+      "type": "netbox_tag",
+      "change": {"actions": ["delete"]}
+    },
+    {
+      "address": "terraform_data.invariants",
+      "type": "terraform_data",
+      "change": {"actions": ["delete"]}
+    }
+  ]
+}

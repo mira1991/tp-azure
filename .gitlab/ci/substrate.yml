@@ -1,0 +1,118 @@
+# Stages substrate_plan / substrate_apply / wait / inventory.
+# Un seul apply nominal crée : VM NetBox -> interfaces -> réservations IP ->
+# VM Proxmox (cloud-init avec les IP réservées).
+
+.substrate_terraform:
+  extends: [.rules_deploy, .environment_lock]
+  image: "${TOOLBOX_IMAGE}"
+  before_script:
+    - !reference [.ssh_agent, before_script]
+    - source scripts/terraform-env.sh substrate
+    - mkdir -p "${TF_PLUGIN_CACHE_DIR}"
+    - terraform -chdir="${TF_ROOT}" init
+
+substrate_plan:
+  extends: .substrate_terraform
+  stage: substrate_plan
+  needs:
+    - resolve_environment
+    - check_required_variables
+    - check_netbox_api
+    - check_proxmox_api
+  script:
+    - terraform -chdir="${TF_ROOT}" plan -out=tfplan.bin
+    - terraform -chdir="${TF_ROOT}" show -json tfplan.bin > substrate-plan.json
+    - terraform -chdir="${TF_ROOT}" show tfplan.bin > substrate-plan.txt
+  artifacts:
+    # Le plan peut contenir des détails d'infrastructure : accès restreint.
+    access: developer
+    paths:
+      - terraform/substrate/tfplan.bin
+      - terraform/substrate/substrate-plan.json
+      - terraform/substrate/substrate-plan.txt
+    expire_in: 7 days
+
+# Mode compatibilité deux phases (TWO_PHASE_APPLY=true) : un apply
+# intermédiaire en phase allocate (réservations NetBox seules), DANS LE MÊME
+# STATE, avant le plan/apply full. Pas de -target : le for_each des VM
+# Proxmox est simplement vide en phase allocate.
+substrate_allocate:
+  extends: .substrate_terraform
+  stage: substrate_plan
+  needs:
+    - resolve_environment
+    - check_required_variables
+    - check_netbox_api
+  rules:
+    - if: '$TWO_PHASE_APPLY != "true"'
+      when: never
+    - !reference [.rules_apply_gate, rules]
+  script:
+    - terraform -chdir="${TF_ROOT}" apply -auto-approve -var terraform_phase=allocate
+
+substrate_apply:
+  extends: .substrate_terraform
+  stage: substrate_apply
+  needs:
+    - resolve_environment
+    - substrate_plan
+  rules:
+    - !reference [.rules_apply_gate, rules]
+  environment:
+    name: "eph/openstack/${ENVIRONMENT_NAME}"
+    on_stop: close_environment
+  script:
+    # Si substrate_allocate a tourné entre temps, le plan binaire est devenu
+    # obsolète : on replanifie/applique en une passe (même contrôle d'accès).
+    - |
+      if [ "${TWO_PHASE_APPLY}" = "true" ]; then
+        terraform -chdir="${TF_ROOT}" apply -auto-approve
+      else
+        terraform -chdir="${TF_ROOT}" apply tfplan.bin
+      fi
+    - terraform -chdir="${TF_ROOT}" output -json > substrate-outputs.json
+    - python3 scripts/render-terraform-outputs.py manifest
+      --outputs substrate-outputs.json --out artifacts/environment-manifest.json
+  artifacts:
+    access: developer
+    paths:
+      - substrate-outputs.json
+      - artifacts/environment-manifest.json
+    expire_in: 30 days
+
+wait_for_nodes:
+  extends: .rules_deploy
+  stage: wait
+  needs:
+    - resolve_environment
+    - substrate_apply
+  before_script:
+    - !reference [.ssh_agent, before_script]
+  script:
+    - python3 scripts/wait-for-ssh.py --outputs substrate-outputs.json --timeout 1800
+
+generate_inventory:
+  extends: .rules_deploy
+  stage: inventory
+  needs:
+    - resolve_environment
+    - substrate_apply
+  script:
+    - python3 scripts/render-terraform-outputs.py inventory
+      --outputs substrate-outputs.json --out-dir artifacts/inventory
+    - |
+      python3 - <<'PYEOF'
+      import json
+
+      with open("substrate-outputs.json", encoding="utf-8") as handle:
+          outputs = json.load(handle)
+      with open("artifacts/globals-context.json", "w", encoding="utf-8") as handle:
+          json.dump(outputs["globals_context"]["value"], handle, indent=2)
+      print("Contexte globals extrait.")
+      PYEOF
+  artifacts:
+    access: developer
+    paths:
+      - artifacts/inventory/
+      - artifacts/globals-context.json
+    expire_in: 30 days

@@ -1,0 +1,125 @@
+# Stages bootstrap / kolla_prechecks / kolla_deploy.
+# Kolla-Ansible est volontairement exécuté par des jobs GitLab (opérations
+# impératives longues) — jamais caché dans des provisioners Terraform.
+
+.kolla_base:
+  extends: [.rules_deploy, .environment_lock]
+  image: "${TOOLBOX_IMAGE}"
+  variables:
+    KOLLA_VENV: "source"
+    ANSIBLE_CONFIG: "${CI_PROJECT_DIR}/ansible/ansible.cfg"
+    ANSIBLE_HOST_KEY_CHECKING: "false"
+  before_script:
+    - !reference [.ssh_agent, before_script]
+    - export KOLLA_CONFIG_DIR="${CI_PROJECT_DIR}/.kolla"
+    - mkdir -p "${KOLLA_CONFIG_DIR}"
+
+# Rend globals.yml et produit passwords.yml (generate ou vault).
+# passwords.yml : 0600, masqué des logs, artefact à accès restreint (requis
+# pour conserver les mêmes secrets entre déploiement source et upgrade),
+# supprimé du workspace par trap en fin de job.
+kolla_generate_config:
+  extends: .kolla_base
+  stage: bootstrap
+  needs:
+    - resolve_environment
+    - generate_inventory
+  script:
+    - trap 'shred -u "${KOLLA_CONFIG_DIR}/passwords.yml.tmp" 2>/dev/null || true' EXIT
+    - python3 scripts/render-terraform-outputs.py globals
+      --outputs substrate-outputs.json
+      --template kolla/globals.yml.j2
+      --versions kolla/versions/source.yml
+      --out "${KOLLA_CONFIG_DIR}/globals.yml"
+    - cp -r kolla/config "${KOLLA_CONFIG_DIR}/config"
+    - |
+      umask 077
+      case "${KOLLA_PASSWORDS_MODE}" in
+        generate)
+          cp "$(python3 -c 'import sys; print(sys.prefix)')/share/kolla-ansible/etc_examples/kolla/passwords.yml" \
+            "${KOLLA_CONFIG_DIR}/passwords.yml" 2>/dev/null \
+            || cp kolla/passwords.yml.example "${KOLLA_CONFIG_DIR}/passwords.yml"
+          kolla-genpwd -p "${KOLLA_CONFIG_DIR}/passwords.yml"
+          ;;
+        vault)
+          : "${VAULT_ADDR:?VAULT_ADDR manquant}" "${VAULT_ROLE_ID:?VAULT_ROLE_ID manquant}" "${VAULT_SECRET_ID:?VAULT_SECRET_ID manquant}"
+          vault_token="$(curl --silent --show-error --fail --request POST \
+            --data "{\"role_id\":\"${VAULT_ROLE_ID}\",\"secret_id\":\"${VAULT_SECRET_ID}\"}" \
+            "${VAULT_ADDR%/}/v1/auth/approle/login" | jq -r '.auth.client_token')"
+          curl --silent --show-error --fail \
+            --header "X-Vault-Token: ${vault_token}" \
+            "${VAULT_ADDR%/}/v1/${KOLLA_VAULT_PASSWORDS_PATH:?KOLLA_VAULT_PASSWORDS_PATH manquant}" \
+            | jq -r '.data.data["passwords.yml"]' > "${KOLLA_CONFIG_DIR}/passwords.yml"
+          ;;
+        *)
+          echo "KOLLA_PASSWORDS_MODE invalide : ${KOLLA_PASSWORDS_MODE}" >&2
+          exit 1
+          ;;
+      esac
+      chmod 0600 "${KOLLA_CONFIG_DIR}/passwords.yml"
+      grep -q 'keystone_admin_password' "${KOLLA_CONFIG_DIR}/passwords.yml" \
+        || { echo "passwords.yml invalide (keystone_admin_password absent)." >&2; exit 1; }
+      echo "passwords.yml prêt (contenu non affiché)."
+  artifacts:
+    # Requis par les stages suivants et par l'upgrade : accès restreint,
+    # jamais public (docs/SECURITY.md).
+    access: developer
+    paths:
+      - .kolla/
+    expire_in: 7 days
+
+kolla_bootstrap:
+  extends: .kolla_base
+  stage: bootstrap
+  needs:
+    - resolve_environment
+    - wait_for_nodes
+    - generate_inventory
+    - kolla_generate_config
+  script:
+    - ansible-playbook -i artifacts/inventory/multinode ansible/playbooks/preflight.yml
+    - ansible-playbook -i artifacts/inventory/multinode ansible/playbooks/prepare.yml
+    - kolla-ansible bootstrap-servers -i artifacts/inventory/multinode
+      --configdir "${KOLLA_CONFIG_DIR}" --passwords "${KOLLA_CONFIG_DIR}/passwords.yml"
+
+kolla_prechecks:
+  extends: .kolla_base
+  stage: kolla_prechecks
+  needs:
+    - resolve_environment
+    - generate_inventory
+    - kolla_generate_config
+    - kolla_bootstrap
+  script:
+    - ansible-playbook -i artifacts/inventory/multinode ansible/playbooks/validate-network.yml
+    - ansible-playbook -i artifacts/inventory/multinode ansible/playbooks/validate-kvm.yml
+    - kolla-ansible prechecks -i artifacts/inventory/multinode
+      --configdir "${KOLLA_CONFIG_DIR}" --passwords "${KOLLA_CONFIG_DIR}/passwords.yml"
+  artifacts:
+    when: always
+    paths:
+      - artifacts/logs/
+    expire_in: 30 days
+
+kolla_deploy:
+  extends: .kolla_base
+  stage: kolla_deploy
+  timeout: 3h
+  needs:
+    - resolve_environment
+    - generate_inventory
+    - kolla_generate_config
+    - kolla_prechecks
+  script:
+    - kolla-ansible deploy -i artifacts/inventory/multinode
+      --configdir "${KOLLA_CONFIG_DIR}" --passwords "${KOLLA_CONFIG_DIR}/passwords.yml"
+    - kolla-ansible post-deploy -i artifacts/inventory/multinode
+      --configdir "${KOLLA_CONFIG_DIR}" --passwords "${KOLLA_CONFIG_DIR}/passwords.yml"
+  after_script:
+    - if [ "${CI_JOB_STATUS}" != "success" ]; then
+      bash scripts/collect-logs.sh substrate-outputs.json artifacts/logs || true; fi
+  artifacts:
+    when: on_failure
+    paths:
+      - artifacts/logs/
+    expire_in: 30 days

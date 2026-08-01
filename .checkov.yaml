@@ -1,0 +1,12 @@
+# Configuration Checkov (stage validate).
+---
+quiet: true
+compact: true
+framework:
+  - terraform
+skip-check:
+  # Backend HTTP GitLab : le verrouillage/chiffrement est géré côté GitLab.
+  - CKV_TF_1 # sources de modules par registre : pas de modules externes ici
+  - CKV_TF_2
+  # Images Glance publiques : voulu pour l'image de smoke test CirrOS.
+  - CKV_OPENSTACK_3

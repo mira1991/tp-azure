@@ -1,0 +1,50 @@
+# Paramètres d'infrastructure par rôle réseau.
+#
+# Les VLAN et préfixes eux-mêmes sont PERMANENTS et lus dans NetBox via des
+# data sources Terraform (data-netbox.tf) — ils ne sont jamais créés ni
+# supprimés par ce projet. Ce fichier ne porte que les paramètres de
+# raccordement (bridge Proxmox, MTU, passerelle, routes) qui ne sont pas
+# toujours modélisés dans NetBox.
+#
+# Priorité de résolution dans Terraform (locals-networking.tf) :
+#   1. custom field NetBox sur le préfixe (mapping : config/netbox-fields.yml) ;
+#   2. valeur de ce fichier (roles.<role> puis defaults) ;
+#   3. défaut codé (mtu 1500).
+---
+defaults:
+  # Réserver une IP NetBox pour les interfaces de ce rôle.
+  allocate_ip: true
+  # Pousser une passerelle par défaut dans cloud-init (management uniquement).
+  use_gateway: false
+  # Passerelle = cidrhost(prefix, gateway_host_offset) sauf override.
+  # NOTE : ce calcul ne sert QUE pour l'adresse de la passerelle (équipement
+  # permanent, hors périmètre d'allocation) — jamais pour allouer une IP de VM.
+  gateway_host_offset: 1
+  # Passerelle explicite (prioritaire sur gateway_host_offset si non vide).
+  gateway_override: ""
+  mtu: 1500
+  # true : le tag VLAN est posé par Proxmox sur le bridge (bridge trunk).
+  # false : le bridge est déjà dédié au VLAN (pas de tag côté Proxmox).
+  vlan_tag_on_bridge: true
+  # Bridge Proxmox par défaut — À ADAPTER à votre plateforme.
+  proxmox_bridge: "vmbr0"
+  dns_servers: []
+  static_routes: []
+
+# Valeurs globales de l'environnement (surchageables par variables Terraform
+# dns_servers / search_domain / ntp_servers).
+global:
+  dns_servers: []
+  search_domain: ""
+  ntp_servers: []
+
+roles:
+  management:
+    use_gateway: true
+  internal_api: {}
+  tunnel: {}
+  provider:
+    # Interface L2 pure pour neutron_external_interface : pas d'IP.
+    allocate_ip: false
+  storage: {}
+  octavia_management: {}
