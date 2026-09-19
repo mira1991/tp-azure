@@ -1,0 +1,28 @@
+# Terraform
+**/.terraform/*
+.terraform.lock.hcl.bak
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+plan.cache
+plan.json
+
+# Never commit real credentials or generated variable files
+*.auto.tfvars
+secrets.tfvars
+clouds.yaml
+*.pem
+id_rsa*
+id_ed25519*
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store

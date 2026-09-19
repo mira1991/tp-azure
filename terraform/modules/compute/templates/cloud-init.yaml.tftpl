@@ -1,0 +1,32 @@
+#cloud-config
+hostname: ${hostname}
+fqdn: ${hostname}.local
+manage_etc_hosts: true
+
+package_update: true
+package_upgrade: false
+
+packages:
+  - nginx
+  - curl
+  - jq
+
+write_files:
+  - path: /var/www/html/index.html
+    owner: root:root
+    permissions: "0644"
+    content: |
+      <!doctype html>
+      <html lang="en">
+        <head><meta charset="utf-8"><title>${hostname}</title></head>
+        <body>
+          <h1>${hostname}</h1>
+          <p>Environment: ${environment}</p>
+          <p>Node number: ${index}</p>
+        </body>
+      </html>
+
+runcmd:
+  - [systemctl, enable, --now, nginx]
+
+final_message: "${hostname} is up after $UPTIME seconds"
