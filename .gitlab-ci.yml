@@ -29,10 +29,16 @@ variables:
   TF_CLI_ARGS_apply: "-lock-timeout=300s"
   TF_CLI_ARGS_destroy: "-lock-timeout=300s"
 
+# Resources are created in dependency order, one stage per layer, using
+# -target. Each layer must exist before the next one can be planned, so a
+# failure stops the rollout at the layer that broke instead of half-building
+# the stack.
 stages:
   - validate
   - plan
-  - apply
+  - apply-network
+  - apply-security
+  - apply-compute
   - destroy
 
 ###############################################################################
@@ -63,21 +69,39 @@ stages:
     - gitlab-terraform plan-json
   environment:
     action: prepare
+  # Only the report is kept: each apply layer re-plans against the state left
+  # by the previous layer, so a saved plan from this job would be stale by the
+  # time the rollout reaches it.
   artifacts:
     expire_in: 2 days
-    paths:
-      - ${TF_ROOT}/plan.cache
     reports:
       terraform: ${TF_ROOT}/plan.json
 
-# Applies the reviewed plan artifact, so it never re-plans against newer state.
-.apply:
+# One layer of the stack. TF_TARGET limits the plan to that layer; the final
+# layer leaves it empty so the last apply converges the whole configuration
+# and picks up anything the targeted runs skipped.
+.apply_layer:
   extends: .terraform
-  stage: apply
   script:
     - gitlab-terraform init
+    - gitlab-terraform plan ${TF_TARGET:+-target=$TF_TARGET} -var-file="${TF_VARS_FILE}"
     - gitlab-terraform apply
   resource_group: ${TF_STATE_NAME}
+
+.layer_network:
+  stage: apply-network
+  variables:
+    TF_TARGET: module.network
+
+.layer_security:
+  stage: apply-security
+  variables:
+    TF_TARGET: module.security
+
+.layer_compute:
+  stage: apply-compute
+  variables:
+    TF_TARGET: ""
 
 .destroy:
   extends: .terraform
@@ -162,7 +186,8 @@ security_scan:
   allow_failure: true
 
 ###############################################################################
-# dev: plans on every merge request, applies from the default branch
+# dev: plans on every merge request, rolls out layer by layer from the
+# default branch
 ###############################################################################
 
 plan:dev:
@@ -171,21 +196,34 @@ plan:dev:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
 
-apply:dev:
-  extends: [.apply, .dev]
+network:dev:
+  extends: [.apply_layer, .layer_network, .dev]
   needs:
     - plan:dev
-  environment:
-    on_stop: destroy:dev
+  # The one manual gate of the rollout: the later layers follow automatically
+  # once the network is up.
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
       when: manual
+      allow_failure: false
+
+security:dev:
+  extends: [.apply_layer, .layer_security, .dev]
+  needs:
+    - network:dev
+
+compute:dev:
+  extends: [.apply_layer, .layer_compute, .dev]
+  needs:
+    - security:dev
+  environment:
+    on_stop: destroy:dev
 
 destroy:dev:
   extends: [.destroy, .dev]
 
 ###############################################################################
-# staging: plans on the default branch, applies manually
+# staging: plans on the default branch, rolls out layer by layer
 ###############################################################################
 
 plan:staging:
@@ -193,21 +231,34 @@ plan:staging:
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
 
-apply:staging:
-  extends: [.apply, .staging]
+network:staging:
+  extends: [.apply_layer, .layer_network, .staging]
   needs:
     - plan:staging
-  environment:
-    on_stop: destroy:staging
+  # The one manual gate of the rollout: the later layers follow automatically
+  # once the network is up.
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
       when: manual
+      allow_failure: false
+
+security:staging:
+  extends: [.apply_layer, .layer_security, .staging]
+  needs:
+    - network:staging
+
+compute:staging:
+  extends: [.apply_layer, .layer_compute, .staging]
+  needs:
+    - security:staging
+  environment:
+    on_stop: destroy:staging
 
 destroy:staging:
   extends: [.destroy, .staging]
 
 ###############################################################################
-# prod: plans on the default branch and on tags, applies manually
+# prod: plans on the default branch and on tags, rolls out layer by layer
 ###############################################################################
 
 plan:prod:
@@ -216,17 +267,31 @@ plan:prod:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
     - if: $CI_COMMIT_TAG
 
-apply:prod:
-  extends: [.apply, .prod]
+network:prod:
+  extends: [.apply_layer, .layer_network, .prod]
   needs:
     - plan:prod
-  environment:
-    on_stop: destroy:prod
+  # The one manual gate of the rollout: the later layers follow automatically
+  # once the network is up.
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
       when: manual
+      allow_failure: false
     - if: $CI_COMMIT_TAG
       when: manual
+      allow_failure: false
+
+security:prod:
+  extends: [.apply_layer, .layer_security, .prod]
+  needs:
+    - network:prod
+
+compute:prod:
+  extends: [.apply_layer, .layer_compute, .prod]
+  needs:
+    - security:prod
+  environment:
+    on_stop: destroy:prod
 
 destroy:prod:
   extends: [.destroy, .prod]

@@ -44,13 +44,50 @@ derived from it, so a job cannot plan one environment against another's state.
 | validate | `validate` (fmt, init, validate), `tflint`, `security_scan` | every pipeline |
 | plan | `plan:dev` | merge requests and the default branch |
 | plan | `plan:staging`, `plan:prod` | default branch, and tags for `plan:prod` |
-| apply | `apply:dev`, `apply:staging`, `apply:prod` | manual, default branch |
-| destroy | `destroy:dev`, `destroy:staging`, `destroy:prod` | manual, default branch |
+| apply-network | `network:<env>` | manual, default branch |
+| apply-security | `security:<env>` | after the network layer |
+| apply-compute | `compute:<env>` | after the security layer |
+| destroy | `destroy:<env>` | manual, default branch |
 
-The apply jobs consume the `plan.cache` artifact, so they apply exactly what was
-reviewed rather than re-planning against newer state. `plan.json` is published
-as a Terraform report, which is what puts the resource counts in the merge
-request.
+`plan.json` from the plan stage is published as a Terraform report, which is
+what puts the resource counts in the merge request.
+
+## Creating the resources by target, one layer per stage
+
+The stack is built in dependency order rather than in a single apply. Each
+stage plans and applies one layer with `-target`:
+
+| Stage | Target | Creates |
+| --- | --- | --- |
+| `apply-network` | `module.network` | network, subnet, router, router interface |
+| `apply-security` | `module.security` | security group and its rules |
+| `apply-compute` | none | keypair, ports, instances, floating IPs, volumes, and anything the earlier targets skipped |
+
+Three properties follow from this shape:
+
+- A failure stops the rollout at the layer that broke. The pipeline does not
+  half-build the stack and then fail on an unrelated resource.
+- Terraform pulls in whatever a target depends on, so the layers can be applied
+  in order without listing individual resources.
+- The last stage runs **without** `-target`, so it converges the full
+  configuration. Targeted applies are a partial operation by design, and this
+  final untargeted pass is what guarantees the state matches the code.
+
+Only the first layer is a manual gate. Once the network is approved the
+remaining layers run on their own, so a rollout is one click rather than three.
+Each layer takes the same `resource_group` lock, so two pipelines cannot
+interleave layers on the same environment.
+
+The same sequence exists locally in the `Makefile`:
+
+```bash
+make plan ENV=dev        # full plan, nothing applied
+make network ENV=dev     # -target=module.network
+make security ENV=dev    # -target=module.security
+make compute ENV=dev     # untargeted, converges everything
+make up ENV=dev          # the three layers in order
+make destroy ENV=dev
+```
 
 `tflint` and `security_scan` (Checkov) are advisory: they report findings
 without blocking. The workflow rules keep one pipeline per change, so a push to
@@ -93,6 +130,8 @@ terraform validate
 terraform plan  -var-file=environments/dev.tfvars
 terraform apply -var-file=environments/dev.tfvars
 ```
+
+To build it layer by layer instead, use the `Makefile` targets shown above.
 
 To work against the GitLab state instead, run `gitlab-terraform init` inside the
 same image CI uses, or follow GitLab's managed Terraform state documentation to
