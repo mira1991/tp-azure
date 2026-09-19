@@ -7,15 +7,8 @@ config {
   call_module_type = "local"
 }
 
-rule "terraform_required_version" {
-  enabled = true
-}
-
-rule "terraform_required_providers" {
-  enabled = true
-}
-
+# Not part of the recommended preset; the rest of that preset is left at its
+# defaults on purpose.
 rule "terraform_naming_convention" {
   enabled = true
-  format  = "snake_case"
 }

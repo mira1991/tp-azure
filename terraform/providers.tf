@@ -6,5 +6,5 @@ provider "openstack" {
   tenant_name         = var.os_project_name
   user_domain_name    = var.os_user_domain_name
   project_domain_name = var.os_project_domain_name
-  insecure            = var.os_insecure
+  cacert_file         = var.os_cacert_file
 }

@@ -44,10 +44,10 @@ variable "os_project_domain_name" {
   default     = "Default"
 }
 
-variable "os_insecure" {
-  description = "Skip TLS verification of the Keystone endpoint. Only for lab clouds with self-signed certificates."
-  type        = bool
-  default     = false
+variable "os_cacert_file" {
+  description = "Path to a PEM bundle trusted when talking to Keystone. Use it for clouds with a private CA instead of disabling verification."
+  type        = string
+  default     = null
 }
 
 ###############################################################################
@@ -170,7 +170,7 @@ variable "data_volume_size" {
 }
 
 variable "availability_zone" {
-  description = "Nova availability zone. Empty lets the scheduler decide."
+  description = "Nova availability zone. Null lets the scheduler decide."
   type        = string
-  default     = ""
+  default     = null
 }

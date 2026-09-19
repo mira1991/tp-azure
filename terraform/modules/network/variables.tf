@@ -16,11 +16,9 @@ variable "subnet_cidr" {
 variable "dns_nameservers" {
   description = "DNS resolvers advertised over DHCP."
   type        = list(string)
-  default     = []
 }
 
 variable "tags" {
   description = "Tags applied to the network resources."
   type        = list(string)
-  default     = []
 }

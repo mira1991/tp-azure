@@ -1,11 +1,3 @@
-locals {
-  # Public listeners exposed by the web instances.
-  web_ports = {
-    http  = 80
-    https = 443
-  }
-}
-
 resource "openstack_networking_secgroup_v2" "web" {
   name                 = "${var.name_prefix}-web"
   description          = "Web tier of ${var.name_prefix}, managed by Terraform"
@@ -35,10 +27,11 @@ resource "openstack_networking_secgroup_rule_v2" "ssh" {
 }
 
 resource "openstack_networking_secgroup_rule_v2" "web" {
+  # One rule per (public listener, allowed source) pair.
   for_each = {
-    for pair in setproduct(keys(local.web_ports), var.http_allowed_cidrs) :
+    for pair in setproduct([80, 443], var.http_allowed_cidrs) :
     "${pair[0]}-${pair[1]}" => {
-      port = local.web_ports[pair[0]]
+      port = pair[0]
       cidr = pair[1]
     }
   }

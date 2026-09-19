@@ -1,6 +1,7 @@
+# The name must resolve to exactly one image. Pinning it here keeps an image
+# refresh upstream out of the plan until image_name is deliberately bumped.
 data "openstack_images_image_v2" "this" {
-  name        = var.image_name
-  most_recent = true
+  name = var.image_name
 }
 
 data "openstack_compute_flavor_v2" "this" {
@@ -24,7 +25,11 @@ data "openstack_compute_keypair_v2" "existing" {
 }
 
 locals {
-  keypair_name = var.ssh_public_key == "" ? one(data.openstack_compute_keypair_v2.existing[*].name) : one(openstack_compute_keypair_v2.this[*].name)
+  # Exactly one of the two is populated.
+  keypair_name = one(concat(
+    openstack_compute_keypair_v2.this[*].name,
+    data.openstack_compute_keypair_v2.existing[*].name,
+  ))
 
   instance_names = [
     for i in range(var.instance_count) : format("%s-web-%02d", var.name_prefix, i + 1)
@@ -55,7 +60,7 @@ resource "openstack_compute_instance_v2" "this" {
   image_id          = data.openstack_images_image_v2.this.id
   flavor_id         = data.openstack_compute_flavor_v2.this.id
   key_pair          = local.keypair_name
-  availability_zone = var.availability_zone == "" ? null : var.availability_zone
+  availability_zone = var.availability_zone
   tags              = var.tags
 
   user_data = templatefile("${path.module}/templates/cloud-init.yaml.tftpl", {
@@ -67,18 +72,12 @@ resource "openstack_compute_instance_v2" "this" {
   network {
     port = openstack_networking_port_v2.this[count.index].id
   }
-
-  lifecycle {
-    # Rebuilding every instance because the image was refreshed upstream is
-    # a deliberate action, not a side effect of a plan.
-    ignore_changes = [image_id]
-  }
 }
 
 resource "openstack_networking_floatingip_v2" "this" {
   count = local.floating_ip_count
 
-  pool        = var.external_network_name
+  pool        = var.floating_ip_pool
   description = "Floating IP of ${local.instance_names[count.index]}"
   tags        = var.tags
 }

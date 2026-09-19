@@ -21,5 +21,4 @@ variable "http_allowed_cidrs" {
 variable "tags" {
   description = "Tags applied to the security group."
   type        = list(string)
-  default     = []
 }

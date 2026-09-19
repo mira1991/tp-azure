@@ -5,6 +5,7 @@ locals {
     [
       "project:${var.project_name}",
       "environment:${var.environment}",
+      "owner:platform",
       "managed-by:terraform",
     ],
     var.tags,
@@ -34,22 +35,22 @@ module "security" {
 module "compute" {
   source = "./modules/compute"
 
-  name_prefix           = local.name_prefix
-  environment           = var.environment
-  instance_count        = var.instance_count
-  image_name            = var.image_name
-  flavor_name           = var.flavor_name
-  availability_zone     = var.availability_zone
-  ssh_public_key        = var.ssh_public_key
-  data_volume_size      = var.data_volume_size
-  assign_floating_ips   = var.assign_floating_ips
-  external_network_name = var.external_network_name
-  network_id            = module.network.network_id
-  subnet_id             = module.network.subnet_id
-  security_group_ids    = [module.security.web_security_group_id]
-  tags                  = local.common_tags
+  name_prefix         = local.name_prefix
+  environment         = var.environment
+  instance_count      = var.instance_count
+  image_name          = var.image_name
+  flavor_name         = var.flavor_name
+  availability_zone   = var.availability_zone
+  ssh_public_key      = var.ssh_public_key
+  data_volume_size    = var.data_volume_size
+  assign_floating_ips = var.assign_floating_ips
+  tags                = local.common_tags
 
-  # The router interface must exist before the instances boot, otherwise
-  # cloud-init cannot reach the package mirrors.
-  depends_on = [module.network]
+  # The network module resolves the external network once and its subnet
+  # output waits for the router interface, so instances never boot before
+  # they have a route out.
+  floating_ip_pool   = module.network.external_network_name
+  network_id         = module.network.network_id
+  subnet_id          = module.network.subnet_id
+  security_group_ids = [module.security.web_security_group_id]
 }

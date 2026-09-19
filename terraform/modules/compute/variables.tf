@@ -14,7 +14,7 @@ variable "instance_count" {
 }
 
 variable "image_name" {
-  description = "Name of the Glance image to boot."
+  description = "Name of the Glance image to boot. Must match exactly one image."
   type        = string
 }
 
@@ -24,15 +24,13 @@ variable "flavor_name" {
 }
 
 variable "availability_zone" {
-  description = "Nova availability zone. Empty lets the scheduler decide."
+  description = "Nova availability zone. Null lets the scheduler decide."
   type        = string
-  default     = ""
 }
 
 variable "ssh_public_key" {
   description = "SSH public key to register. Empty reuses the existing keypair named <name_prefix>-key."
   type        = string
-  default     = ""
 }
 
 variable "network_id" {
@@ -50,25 +48,22 @@ variable "security_group_ids" {
   type        = list(string)
 }
 
-variable "external_network_name" {
-  description = "Name of the floating IP pool."
+variable "floating_ip_pool" {
+  description = "Name of the network floating IPs are allocated from."
   type        = string
 }
 
 variable "assign_floating_ips" {
   description = "Allocate and associate a floating IP per instance."
   type        = bool
-  default     = true
 }
 
 variable "data_volume_size" {
   description = "Size in GB of the extra Cinder volume per instance. 0 disables it."
   type        = number
-  default     = 0
 }
 
 variable "tags" {
   description = "Tags applied to the compute resources."
   type        = list(string)
-  default     = []
 }

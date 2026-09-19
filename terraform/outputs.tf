@@ -32,8 +32,3 @@ output "instance_floating_ips" {
   description = "Floating IP addresses of the instances, empty when assign_floating_ips is false."
   value       = module.compute.floating_ips
 }
-
-output "ssh_commands" {
-  description = "Ready to paste SSH commands for the reachable instances."
-  value       = module.compute.ssh_commands
-}

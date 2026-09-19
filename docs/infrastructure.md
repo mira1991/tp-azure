@@ -17,11 +17,14 @@ local modules:
 Instances are provisioned by cloud-init, which installs nginx and writes a page
 carrying the host name, environment and node index.
 
-## Naming
-
 Every resource is prefixed with `<project_name>-<environment>`, for example
-`tp-dev-net`, `tp-dev-web-01`. Changing `project_name` or `environment`
-therefore replaces the whole stack, which is what keeps environments isolated.
+`tp-dev-net`, `tp-dev-web-01`. Changing either input therefore replaces the
+whole stack, which is what keeps environments isolated.
+
+The network module resolves the external network once and exports its name as
+the floating IP pool, so the router uplink and the floating IPs cannot drift
+apart. Its `subnet_id` output waits for the router interface, which is what
+orders instance boot after the route out exists.
 
 ## State
 
@@ -30,43 +33,50 @@ environment selected by `TF_STATE_NAME`. The `backend "http"` block in
 `terraform/versions.tf` is empty on purpose: `gitlab-terraform init` injects the
 address, lock and unlock URLs, and the job token credentials.
 
-The `apply` jobs declare `resource_group: ${TF_STATE_NAME}`, so two pipelines can
-never apply the same environment at the same time.
+`TF_STATE_NAME` is the only place an environment is named in CI. The variables
+file, the GitLab environment and the `resource_group` concurrency lock are all
+derived from it, so a job cannot plan one environment against another's state.
 
 ## Pipeline
 
 | Stage | Jobs | Trigger |
 | --- | --- | --- |
-| validate | `fmt`, `validate`, `tflint`, `security_scan` | every branch and merge request |
+| validate | `validate` (fmt, init, validate), `tflint`, `security_scan` | every pipeline |
 | plan | `plan:dev` | merge requests and the default branch |
-| plan | `plan:staging`, `plan:prod` | default branch (`plan:prod` also on tags) |
+| plan | `plan:staging`, `plan:prod` | default branch, and tags for `plan:prod` |
 | apply | `apply:dev`, `apply:staging`, `apply:prod` | manual, default branch |
 | destroy | `destroy:dev`, `destroy:staging`, `destroy:prod` | manual, default branch |
 
-`plan` writes both `plan.cache` and `plan.json`. The JSON is published as a
-Terraform report, so merge requests show the resource counts inline. The apply
-job consumes `plan.cache`, which means it applies exactly what was reviewed.
+The apply jobs consume the `plan.cache` artifact, so they apply exactly what was
+reviewed rather than re-planning against newer state. `plan.json` is published
+as a Terraform report, which is what puts the resource counts in the merge
+request.
 
 `tflint` and `security_scan` (Checkov) are advisory: they report findings
-without blocking the pipeline.
+without blocking. The workflow rules keep one pipeline per change, so a push to
+a branch with an open merge request does not run everything twice.
 
 ## Required CI/CD variables
 
-Set these under Settings > CI/CD > Variables, masked and protected:
+Set these under Settings > CI/CD > Variables, masked and protected. This table
+is the only list; the pipeline and the README point here.
 
-| Variable | Example |
-| --- | --- |
-| `TF_VAR_os_auth_url` | `https://keystone.example.net:5000/v3` |
-| `TF_VAR_os_user_name` | `terraform` |
-| `TF_VAR_os_password` | masked secret |
-| `TF_VAR_os_project_name` | `infra` |
-| `TF_VAR_os_region` | `RegionOne` |
-| `TF_VAR_os_user_domain_name` | `Default` |
-| `TF_VAR_os_project_domain_name` | `Default` |
-| `TF_VAR_ssh_public_key` | `ssh-ed25519 AAAA...` |
+| Variable | Example | Required |
+| --- | --- | --- |
+| `TF_VAR_os_auth_url` | `https://keystone.example.net:5000/v3` | yes |
+| `TF_VAR_os_user_name` | `terraform` | yes |
+| `TF_VAR_os_password` | masked secret | yes |
+| `TF_VAR_os_project_name` | `infra` | yes |
+| `TF_VAR_ssh_public_key` | `ssh-ed25519 AAAA...` | yes |
+| `TF_VAR_os_region` | `RegionOne` | defaults to `RegionOne` |
+| `TF_VAR_os_user_domain_name` | `Default` | defaults to `Default` |
+| `TF_VAR_os_project_domain_name` | `Default` | defaults to `Default` |
+| `TF_VAR_os_cacert_file` | path to a PEM bundle | only for a private CA |
 
 No credential belongs in a `.tfvars` file. The files under
-`terraform/environments/` only carry sizing and network settings.
+`terraform/environments/` carry only the values that differ from the defaults in
+`terraform/variables.tf`: subnet, instance count, flavor, volume size, SSH
+source ranges and the cost-center tag.
 
 ## Running locally
 
@@ -84,39 +94,23 @@ terraform plan  -var-file=environments/dev.tfvars
 terraform apply -var-file=environments/dev.tfvars
 ```
 
-To work against the GitLab state from a laptop, initialize the HTTP backend
-with a personal access token that has the `api` scope:
-
-```bash
-PROJECT_ID=<numeric project id>
-STATE=dev
-terraform init \
-  -backend-config="address=https://gitlab.example.net/api/v4/projects/${PROJECT_ID}/terraform/state/${STATE}" \
-  -backend-config="lock_address=https://gitlab.example.net/api/v4/projects/${PROJECT_ID}/terraform/state/${STATE}/lock" \
-  -backend-config="unlock_address=https://gitlab.example.net/api/v4/projects/${PROJECT_ID}/terraform/state/${STATE}/lock" \
-  -backend-config="username=${GITLAB_USER}" \
-  -backend-config="password=${GITLAB_TOKEN}" \
-  -backend-config="lock_method=POST" \
-  -backend-config="unlock_method=DELETE" \
-  -backend-config="retry_wait_min=5"
-```
+To work against the GitLab state instead, run `gitlab-terraform init` inside the
+same image CI uses, or follow GitLab's managed Terraform state documentation to
+pass the `-backend-config` flags with a personal access token that has the `api`
+scope.
 
 ## Operational notes
 
-- The compute module ignores changes to `image_id`. A refreshed upstream image
-  will not silently rebuild every instance; bump `image_name` or taint the
-  instance when a rebuild is wanted.
-- `ssh_allowed_cidrs` defaults to `0.0.0.0/0` for the lab. Narrow it to the
-  bastion or VPN range for staging and production.
+- The Glance image is resolved by exact name, so `image_name` must match one
+  image. A new OS image is rolled by bumping `image_name`, which shows up as a
+  normal plan and goes through the manual apply gate.
+- `ssh_allowed_cidrs` defaults to `0.0.0.0/0` for the lab. Staging and
+  production already narrow it to `10.0.0.0/8`.
 - `data_volume_size = 0` disables the Cinder volume entirely, which is the
-  default for `dev`.
-- Floating IPs come from the pool named by `external_network_name`; the same
-  network is used as the router uplink.
-
-## Dependency lock file
-
-`terraform/.terraform.lock.hcl` is not committed yet because the provider
-registry is not reachable from the environment this code was written in. Run
-`terraform init` once against a host that can reach `registry.terraform.io`,
-then commit the generated lock file so every pipeline run resolves the same
-provider build.
+  default and what `dev` uses.
+- For a cloud with a private CA, set `TF_VAR_os_cacert_file` to a PEM bundle
+  supplied as a CI file variable. There is deliberately no switch to turn
+  certificate verification off.
+- `terraform/.terraform.lock.hcl` is not committed yet. Run `terraform init`
+  once from a host that can reach `registry.terraform.io` and commit the result,
+  which also makes the pipeline's provider cache key effective.
